@@ -28,9 +28,11 @@ import org.apache.hudi.index.bloom.HoodieGlobalBloomIndex;
 import org.apache.hudi.index.bloom.ListBasedHoodieBloomIndexHelper;
 import org.apache.hudi.index.bucket.HoodieConsistentBucketIndex;
 import org.apache.hudi.index.bucket.HoodieSimpleBucketIndex;
+import org.apache.hudi.index.radixspl.HoodieRadixSplineIndex;
 import org.apache.hudi.index.simple.HoodieGlobalSimpleIndex;
 import org.apache.hudi.index.simple.HoodieSimpleIndex;
 import org.apache.hudi.index.state.FlinkInMemoryStateIndex;
+
 
 /**
  * A factory to generate Flink {@link HoodieIndex}.
@@ -52,6 +54,8 @@ public final class FlinkHoodieIndexFactory {
         return new HoodieBloomIndex(config, ListBasedHoodieBloomIndexHelper.getInstance());
       case GLOBAL_BLOOM:
         return new HoodieGlobalBloomIndex(config, ListBasedHoodieBloomIndexHelper.getInstance());
+      case RADIX_SPLINE:
+        return new HoodieRadixSplineIndex(config);
       case SIMPLE:
         return new HoodieSimpleIndex(config, Option.empty());
       case GLOBAL_SIMPLE:

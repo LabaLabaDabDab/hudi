@@ -45,13 +45,7 @@ import java.util.stream.Collectors;
 
 import static org.apache.hudi.avro.HoodieAvroUtils.unwrapAvroValueWrapper;
 import static org.apache.hudi.avro.HoodieAvroUtils.wrapValueIntoAvro;
-import static org.apache.hudi.common.config.HoodieMetadataConfig.ENABLE;
-import static org.apache.hudi.common.config.HoodieMetadataConfig.ENABLE_METADATA_INDEX_BLOOM_FILTER;
-import static org.apache.hudi.common.config.HoodieMetadataConfig.ENABLE_METADATA_INDEX_COLUMN_STATS;
-import static org.apache.hudi.common.config.HoodieMetadataConfig.ENABLE_METADATA_INDEX_PARTITION_STATS;
-import static org.apache.hudi.common.config.HoodieMetadataConfig.EXPRESSION_INDEX_ENABLE_PROP;
-import static org.apache.hudi.common.config.HoodieMetadataConfig.RECORD_INDEX_ENABLE_PROP;
-import static org.apache.hudi.common.config.HoodieMetadataConfig.SECONDARY_INDEX_ENABLE_PROP;
+import static org.apache.hudi.common.config.HoodieMetadataConfig.*;
 import static org.apache.hudi.common.util.ConfigUtils.getBooleanWithAltKeys;
 import static org.apache.hudi.common.util.TypeUtils.unsafeCast;
 import static org.apache.hudi.common.util.ValidationUtils.checkArgument;
@@ -231,6 +225,26 @@ public enum MetadataPartitionType {
     public String getPartitionPath(HoodieTableMetaClient metaClient, String indexName) {
       checkArgument(metaClient.getIndexMetadata().isPresent(), "Index definition is not present for index: " + indexName);
       return metaClient.getIndexMetadata().get().getIndexDefinitions().get(indexName).getIndexName();
+    }
+  },
+  RADIX_SPLINE_INDEX(HoodieTableMetadataUtil.PARTITION_NAME_RADIX_SPLINE_INDEX,
+          "radix-spline-",
+          8) {
+    @Override
+    public boolean isMetadataPartitionEnabled(TypedProperties writeConfig) {
+      // используем новый ConfigProperty
+      return writeConfig.getBoolean(ENABLE_RADIX_SPLINE_INDEX.key(), ENABLE_RADIX_SPLINE_INDEX.defaultValue());
+    }
+
+    @Override
+    public void constructMetadataPayload(HoodieMetadataPayload payload, GenericRecord record) {
+      throw new UnsupportedOperationException(
+              "RadixSplineIndex does not support AVRO payload construction");
+    }
+
+    @Override
+    public HoodieMetadataPayload combineMetadataPayloads(HoodieMetadataPayload older, HoodieMetadataPayload newer) {
+      return newer;
     }
   },
   PARTITION_STATS(HoodieTableMetadataUtil.PARTITION_NAME_PARTITION_STATS, "partition-stats-", 6) {

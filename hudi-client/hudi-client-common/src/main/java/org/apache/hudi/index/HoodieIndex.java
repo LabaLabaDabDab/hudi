@@ -200,7 +200,10 @@ public abstract class HoodieIndex<I, O> implements Serializable {
     @EnumFieldDescription("Index which saves the record key to location mappings in the "
         + "HUDI Metadata Table. Record index is a global index, enforcing key uniqueness across all "
         + "partitions in the table. Supports sharding to achieve very high scale.")
-    RECORD_INDEX
+    RECORD_INDEX,
+
+    @EnumFieldDescription("Uses Radix Spline for efficient point lookups with low memory overhead")
+    RADIX_SPLINE
   }
 
   @EnumDescription("Determines the type of bucketing or hashing to use when `hoodie.index.type`"

@@ -28,6 +28,7 @@ import org.apache.hudi.index.bucket.HoodieSimpleBucketIndex;
 import org.apache.hudi.index.bucket.HoodieSparkConsistentBucketIndex;
 import org.apache.hudi.index.hbase.SparkHoodieHBaseIndex;
 import org.apache.hudi.index.inmemory.HoodieInMemoryHashIndex;
+import org.apache.hudi.index.radixspl.HoodieRadixSplineIndex;
 import org.apache.hudi.index.simple.HoodieGlobalSimpleIndex;
 import org.apache.hudi.index.simple.HoodieSimpleIndex;
 import org.apache.hudi.keygen.factory.HoodieSparkKeyGeneratorFactory;
@@ -59,6 +60,8 @@ public final class SparkHoodieIndexFactory {
         return new HoodieSimpleIndex(config, HoodieSparkKeyGeneratorFactory.createBaseKeyGenerator(config));
       case GLOBAL_SIMPLE:
         return new HoodieGlobalSimpleIndex(config, HoodieSparkKeyGeneratorFactory.createBaseKeyGenerator(config));
+      case RADIX_SPLINE:
+        return new HoodieRadixSplineIndex(config);
       case BUCKET:
         switch (config.getBucketIndexEngineType()) {
           case SIMPLE:

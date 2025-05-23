@@ -349,6 +349,30 @@ public class HoodieIndexConfig extends HoodieConfig {
       .withDocumentation("Control if table with bucket index use bucket query or not");
 
   /**
+   * Enable global index spanning partitions.
+   */
+  public static final ConfigProperty<Boolean> GLOBAL_INDEX_ENABLED = ConfigProperty
+          .key("hoodie.index.global.simple.enable")
+          .defaultValue(false)
+          .withDocumentation("Enable global (cross-partition) Radix Spline index lookup.");
+
+  /**
+   * Number of radix bits for Radix Spline index.
+   */
+  public static final ConfigProperty<Integer> RADIX_SPLINE_INDEX_RADIX_BITS = ConfigProperty
+          .key("hoodie.index.radixspl.radix.bits")
+          .defaultValue(8)
+          .withDocumentation("Number of bits for the radix table in Radix Spline index.");
+
+  /**
+   * Maximum spline approximation error tolerated.
+   */
+  public static final ConfigProperty<Double> RADIX_SPLINE_INDEX_MAX_ERROR = ConfigProperty
+          .key("hoodie.index.radixspl.max.error")
+          .defaultValue(1.0)
+          .withDocumentation("Maximum allowed approximation error for the spline index.");
+
+  /**
    * Deprecated configs. These are now part of {@link HoodieHBaseIndexConfig}.
    */
   @Deprecated

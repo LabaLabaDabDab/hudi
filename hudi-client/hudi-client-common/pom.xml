@@ -179,6 +179,35 @@
       <artifactId>mockito-inline</artifactId>
       <scope>test</scope>
     </dependency>
+      <dependency>
+          <groupId>org.apache.hudi</groupId>
+          <artifactId>hudi-common</artifactId>
+          <version>1.1.0-SNAPSHOT</version>
+          <scope>compile</scope>
+      </dependency>
+      <dependency>
+          <groupId>org.apache.flink</groupId>
+          <artifactId>flink-parquet</artifactId>
+          <version>1.20.0</version>
+          <scope>compile</scope>
+      </dependency>
+      <dependency>
+          <groupId>org.apache.hadoop</groupId>
+          <artifactId>hadoop-common</artifactId>
+          <scope>compile</scope>
+      </dependency>
+      <dependency>
+          <groupId>org.testng</groupId>
+          <artifactId>testng</artifactId>
+          <version>RELEASE</version>
+          <scope>compile</scope>
+      </dependency>
+    <dependency>
+      <groupId>org.testng</groupId>
+      <artifactId>testng</artifactId>
+      <version>7.11.0</version>
+      <scope>compile</scope>
+    </dependency>
   </dependencies>
 
   <build>
@@ -197,7 +226,7 @@
               <goal>compile</goal>
             </goals>
           </execution>
-        </executions>
+        </executions><configuration><source>8</source><target>8</target></configuration>
       </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
