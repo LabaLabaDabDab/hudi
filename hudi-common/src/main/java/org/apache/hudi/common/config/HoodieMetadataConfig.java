@@ -258,6 +258,13 @@ public final class HoodieMetadataConfig extends HoodieConfig {
       .sinceVersion("0.14.0")
       .withDocumentation("Create the HUDI Record Index within the Metadata Table");
 
+  public static final ConfigProperty<Boolean> ENABLE_RADIX_SPLINE_INDEX = ConfigProperty
+          .key(METADATA_PREFIX + ".index.radix.spline.enable")
+          .defaultValue(false)
+          .markAdvanced()
+          .sinceVersion("1.1.0")
+          .withDocumentation("Enable storing Radix Spline index shards in the Hudi metadata table");
+
   public static final ConfigProperty<Integer> RECORD_INDEX_MIN_FILE_GROUP_COUNT_PROP = ConfigProperty
       .key(METADATA_PREFIX + ".record.index.min.filegroup.count")
       .defaultValue(10)
@@ -463,6 +470,10 @@ public final class HoodieMetadataConfig extends HoodieConfig {
 
   public boolean isRecordIndexEnabled() {
     return isEnabled() && getBooleanOrDefault(RECORD_INDEX_ENABLE_PROP);
+  }
+
+  public boolean isRadixSplineIndexEnabled() {
+    return getBooleanOrDefault(ENABLE_RADIX_SPLINE_INDEX);
   }
 
   public List<String> getColumnsEnabledForColumnStatsIndex() {

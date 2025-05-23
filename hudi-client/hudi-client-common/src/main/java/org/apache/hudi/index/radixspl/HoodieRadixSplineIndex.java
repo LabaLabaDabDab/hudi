@@ -2,19 +2,19 @@ package org.apache.hudi.index.radixspl;
 
 import org.apache.hudi.common.data.HoodieData;
 import org.apache.hudi.common.engine.HoodieEngineContext;
-import org.apache.hudi.common.model.HoodieRecord;
-import org.apache.hudi.common.model.HoodieRecordLocation;
-import org.apache.hudi.common.model.HoodieRecordPayload;
+import org.apache.hudi.common.model.*;
 import org.apache.hudi.config.HoodieIndexConfig;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.exception.HoodieIndexException;
 import org.apache.hudi.index.HoodieIndex;
-import org.apache.hudi.index.radixspl.model.IndexEntry;
-import org.apache.hudi.index.radixspl.model.RadixSplineModel;
-import org.apache.hudi.index.radixspl.storage.DefaultIndexStorage;
-import org.apache.hudi.index.radixspl.storage.IndexStorage;
+import org.apache.hudi.metadata.HoodieTableMetadata;
 import org.apache.hudi.table.HoodieTable;
 import org.apache.hudi.client.WriteStatus;
+import org.apache.hudi.common.fs.FSUtils;
+import org.apache.hudi.common.util.Option;
+import org.apache.hudi.common.util.collection.Pair;
+import org.apache.hudi.index.HoodieIndexUtils;
+import org.apache.hudi.io.HoodieKeyLocationFetchHandle;
 
 import java.util.Collections;
 import java.util.List;
@@ -28,7 +28,7 @@ public class HoodieRadixSplineIndex<T extends HoodieRecordPayload>
     private final IndexStorage storage;
     private final boolean isGlobal;
 
-    public HoodieRadixSplineIndex(HoodieWriteConfig config, HoodieEngineContext context) {
+    public HoodieRadixSplineIndex(HoodieWriteConfig config) {
         super(config);
         this.storage = new DefaultIndexStorage(config);
         this.isGlobal   = config.getBoolean(HoodieIndexConfig.GLOBAL_INDEX_ENABLED);
@@ -44,11 +44,13 @@ public class HoodieRadixSplineIndex<T extends HoodieRecordPayload>
             HoodieEngineContext context,
             HoodieTable table) throws HoodieIndexException {
 
-        if (!model.isBuilt()) {
-            List<IndexEntry> existing = fetchCurrentIndexEntries(table, context);
-            model.addEntries(existing);
-            model.build();
-            storage.saveIndex(model);
+        List<IndexEntry> existing = fetchCurrentIndexEntries(table, context);
+        if (!model.isBuilt() && storage.indexExists()) {
+            if (!existing.isEmpty()) {
+                model.addEntries(existing);
+                model.build();
+                storage.saveIndex(model);
+            }
         }
 
         return records.map(record -> {
@@ -67,6 +69,24 @@ public class HoodieRadixSplineIndex<T extends HoodieRecordPayload>
             HoodieTable table) throws HoodieIndexException {
 
         List<IndexEntry> allEntries = fetchCurrentIndexEntries(table, context);
+        List<WriteStatus> statuses = writeStatuses.collectAsList();
+        for (WriteStatus status : statuses) {
+            for (HoodieRecordDelegate delegate : status.getWrittenRecordDelegates()) {
+                if (delegate.getIgnoreIndexUpdate()) {
+                    continue;
+                }
+                Option<HoodieRecordLocation> loc = delegate.getNewLocation();
+                if (loc.isPresent() && HoodieRecordLocation.isPositionValid(loc.get().getPosition())) {
+                    HoodieRecordLocation l = loc.get();
+                    allEntries.add(new IndexEntry(
+                            delegate.getHoodieKey(),
+                            l.getInstantTime(),
+                            l.getFileId(),
+                            l.getPosition()
+                    ));
+                }
+            }
+        }
         model.clear();
         model.addEntries(allEntries);
         model.build();
@@ -99,8 +119,26 @@ public class HoodieRadixSplineIndex<T extends HoodieRecordPayload>
 
     private List<IndexEntry> fetchCurrentIndexEntries(
             HoodieTable table, HoodieEngineContext context) {
-        return storage.loadIndex()
-                .map(RadixSplineModel::getEntries)
-                .orElseGet(Collections::emptyList);
+        List<String> partitions = table.isPartitioned()
+                ? FSUtils.getAllPartitionPaths(context, table.getMetaClient().getStorage(),
+                config.getMetadataConfig(), table.getMetaClient().getBasePath())
+                : Collections.singletonList(HoodieTableMetadata.EMPTY_PARTITION_NAME);
+
+        List<Pair<String, HoodieBaseFile>> baseFiles =
+                HoodieIndexUtils.getLatestBaseFilesForAllPartitions(partitions, context, table);
+
+        int parallelism = Math.max(1, baseFiles.size());
+
+        HoodieData<IndexEntry> indexEntries = context.parallelize(baseFiles, parallelism)
+                .flatMap(partitionBaseFile -> new HoodieKeyLocationFetchHandle(
+                        config, table, partitionBaseFile, Option.empty()).locations())
+                .map(obj -> {
+                    Pair<HoodieKey, HoodieRecordLocation> entry = (Pair<HoodieKey, HoodieRecordLocation>) obj;
+                    return new IndexEntry(entry.getLeft(),
+                            entry.getRight().getInstantTime(),
+                            entry.getRight().getFileId(), entry.getRight().getPosition());
+                });
+
+        return indexEntries.collectAsList();
     }
 }
