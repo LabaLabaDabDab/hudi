@@ -51,15 +51,7 @@ import static org.apache.hudi.config.HoodieHBaseIndexConfig.PUT_BATCH_SIZE;
 import static org.apache.hudi.config.HoodieHBaseIndexConfig.TABLENAME;
 import static org.apache.hudi.config.HoodieHBaseIndexConfig.ZKPORT;
 import static org.apache.hudi.config.HoodieHBaseIndexConfig.ZKQUORUM;
-import static org.apache.hudi.index.HoodieIndex.IndexType.BLOOM;
-import static org.apache.hudi.index.HoodieIndex.IndexType.BUCKET;
-import static org.apache.hudi.index.HoodieIndex.IndexType.FLINK_STATE;
-import static org.apache.hudi.index.HoodieIndex.IndexType.GLOBAL_BLOOM;
-import static org.apache.hudi.index.HoodieIndex.IndexType.GLOBAL_SIMPLE;
-import static org.apache.hudi.index.HoodieIndex.IndexType.HBASE;
-import static org.apache.hudi.index.HoodieIndex.IndexType.INMEMORY;
-import static org.apache.hudi.index.HoodieIndex.IndexType.RECORD_INDEX;
-import static org.apache.hudi.index.HoodieIndex.IndexType.SIMPLE;
+import static org.apache.hudi.index.HoodieIndex.IndexType.*;
 
 /**
  * Indexing related config.
@@ -79,7 +71,7 @@ public class HoodieIndexConfig extends HoodieConfig {
       // Builder#getDefaultIndexType has already set it according to engine type
       .noDefaultValue()
       .withValidValues(HBASE.name(), INMEMORY.name(), BLOOM.name(), GLOBAL_BLOOM.name(),
-          SIMPLE.name(), GLOBAL_SIMPLE.name(), BUCKET.name(), FLINK_STATE.name(), RECORD_INDEX.name())
+          SIMPLE.name(), GLOBAL_SIMPLE.name(), BUCKET.name(), FLINK_STATE.name(), RECORD_INDEX.name(), RADIX_SPLINE.name())
       .withDocumentation(HoodieIndex.IndexType.class);
 
 
