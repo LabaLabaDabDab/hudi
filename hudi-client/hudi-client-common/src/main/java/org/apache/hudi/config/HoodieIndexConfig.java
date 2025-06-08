@@ -372,6 +372,14 @@ public class HoodieIndexConfig extends HoodieConfig {
           .defaultValue(1.0)
           .withDocumentation("Maximum allowed approximation error for the spline index.");
 
+    /**
+     * Relative path of the Radix Spline index file from the table base path.
+     */
+    public static final ConfigProperty<String> RADIX_SPLINE_INDEX_PATH = ConfigProperty
+            .key("hoodie.index.radixspl.path")
+            .defaultValue(".hoodie/radix-spline-index.idx")
+            .withDocumentation("File path to store Radix Spline index relative to table base path.");
+
   /**
    * Deprecated configs. These are now part of {@link HoodieHBaseIndexConfig}.
    */

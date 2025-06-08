@@ -30,7 +30,8 @@ public class HoodieRadixSplineIndex<T extends HoodieRecordPayload>
 
     public HoodieRadixSplineIndex(HoodieWriteConfig config) {
         super(config);
-        this.storage = new DefaultIndexStorage(config);
+        String indexFile = config.getString(HoodieIndexConfig.RADIX_SPLINE_INDEX_PATH);
+        this.storage = new DefaultIndexStorage(config, indexFile);
         this.isGlobal   = config.getBoolean(HoodieIndexConfig.GLOBAL_INDEX_ENABLED);
         int radixBits   = config.getInt(    HoodieIndexConfig.RADIX_SPLINE_INDEX_RADIX_BITS);
         double maxError = config.getDouble( HoodieIndexConfig.RADIX_SPLINE_INDEX_MAX_ERROR);

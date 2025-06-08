@@ -1,6 +1,7 @@
 package org.apache.hudi.index.radixspl;
 
 import org.apache.hudi.common.util.HadoopConfigUtils;
+import org.apache.hudi.config.HoodieIndexConfig;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.exception.HoodieIndexException;
 import org.apache.hadoop.fs.FSDataInputStream;
@@ -19,7 +20,12 @@ public class DefaultIndexStorage implements IndexStorage {
     private final Configuration hadoopConf;
 
     public DefaultIndexStorage(HoodieWriteConfig config) {
-        this.indexPath = new Path(config.getBasePath(), ".hoodie/radix-spline-index.idx");
+        this(config, config.getString(HoodieIndexConfig.RADIX_SPLINE_INDEX_PATH));
+    }
+
+    public DefaultIndexStorage(HoodieWriteConfig config, String indexFile) {
+        Path path = new Path(indexFile);
+        this.indexPath = path.isAbsolute() ? path : new Path(config.getBasePath(), indexFile);
         this.hadoopConf = HadoopConfigUtils.createHadoopConf(config.getProps());
     }
 
