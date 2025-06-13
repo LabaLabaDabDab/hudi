@@ -15,6 +15,8 @@ import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.collection.Pair;
 import org.apache.hudi.index.HoodieIndexUtils;
 import org.apache.hudi.io.HoodieKeyLocationFetchHandle;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.Collections;
 import java.util.List;
@@ -27,6 +29,7 @@ public class HoodieRadixSplineIndex<T extends HoodieRecordPayload>
     private final RadixSplineModel model;
     private final IndexStorage storage;
     private final boolean isGlobal;
+    private static final Logger LOG = LoggerFactory.getLogger(HoodieRadixSplineIndex.class);
 
     public HoodieRadixSplineIndex(HoodieWriteConfig config) {
         super(config);
@@ -35,6 +38,8 @@ public class HoodieRadixSplineIndex<T extends HoodieRecordPayload>
         this.isGlobal   = config.getBoolean(HoodieIndexConfig.GLOBAL_INDEX_ENABLED);
         int radixBits   = config.getInt(    HoodieIndexConfig.RADIX_SPLINE_INDEX_RADIX_BITS);
         double maxError = config.getDouble( HoodieIndexConfig.RADIX_SPLINE_INDEX_MAX_ERROR);
+        LOG.info("Initializing RadixSplineIndex: file={}, radixBits={}, maxError={}, global={}",
+                indexFile, radixBits, maxError, isGlobal);
         this.model = storage.loadIndex()
                 .orElseGet(() -> new RadixSplineModel(radixBits, maxError, isGlobal));
     }
@@ -44,13 +49,14 @@ public class HoodieRadixSplineIndex<T extends HoodieRecordPayload>
             HoodieData<HoodieRecord<R>> records,
             HoodieEngineContext context,
             HoodieTable table) throws HoodieIndexException {
-
+        LOG.debug("Tagging record locations using RadixSpline index");
         List<IndexEntry> existing = fetchCurrentIndexEntries(table, context);
         if (!model.isBuilt() && storage.indexExists()) {
             if (!existing.isEmpty()) {
                 model.addEntries(existing);
                 model.build();
                 storage.saveIndex(model);
+                LOG.debug("Loaded and built index from storage");
             }
         }
 
@@ -69,6 +75,7 @@ public class HoodieRadixSplineIndex<T extends HoodieRecordPayload>
             HoodieEngineContext context,
             HoodieTable table) throws HoodieIndexException {
 
+        LOG.debug("Updating index with new write statuses");
         List<IndexEntry> allEntries = fetchCurrentIndexEntries(table, context);
         List<WriteStatus> statuses = writeStatuses.collectAsList();
         for (WriteStatus status : statuses) {
@@ -93,6 +100,7 @@ public class HoodieRadixSplineIndex<T extends HoodieRecordPayload>
         model.build();
 
         storage.saveIndex(model);
+        LOG.debug("Index updated and persisted");
 
         return writeStatuses;
     }
@@ -105,16 +113,19 @@ public class HoodieRadixSplineIndex<T extends HoodieRecordPayload>
 
     @Override
     public boolean isGlobal() {
+        LOG.debug("isGlobal called -> {}", isGlobal);
         return isGlobal;
     }
 
     @Override
     public boolean canIndexLogFiles() {
+        LOG.debug("canIndexLogFiles called -> false");
         return false;
     }
 
     @Override
     public boolean isImplicitWithStorage() {
+        LOG.debug("isImplicitWithStorage called -> false");
         return false;
     }
 
@@ -140,6 +151,8 @@ public class HoodieRadixSplineIndex<T extends HoodieRecordPayload>
                             entry.getRight().getFileId(), entry.getRight().getPosition());
                 });
 
-        return indexEntries.collectAsList();
+        List<IndexEntry> entries = indexEntries.collectAsList();
+        LOG.debug("Fetched {} index entries", entries.size());
+        return entries;
     }
 }

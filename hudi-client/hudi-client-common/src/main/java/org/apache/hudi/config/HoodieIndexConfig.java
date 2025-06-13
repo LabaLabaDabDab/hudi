@@ -748,6 +748,33 @@ public class HoodieIndexConfig extends HoodieConfig {
       return this;
     }
 
+    /**
+     * Configures number of radix bits for Radix Spline index.
+     */
+    public Builder withRadixSplineRadixBits(int radixBits) {
+      hoodieIndexConfig.setValue(RADIX_SPLINE_INDEX_RADIX_BITS, String.valueOf(radixBits));
+      LOG.debug("Set RadixSpline radixBits to {}", radixBits);
+      return this;
+    }
+
+    /**
+     * Configures maximum allowed approximation error for Radix Spline index.
+     */
+    public Builder withRadixSplineMaxError(double maxError) {
+      hoodieIndexConfig.setValue(RADIX_SPLINE_INDEX_MAX_ERROR, String.valueOf(maxError));
+      LOG.debug("Set RadixSpline maxError to {}", maxError);
+      return this;
+    }
+
+    /**
+     * Configures path to persist Radix Spline index file.
+     */
+    public Builder withRadixSplineIndexPath(String path) {
+      hoodieIndexConfig.setValue(RADIX_SPLINE_INDEX_PATH, path);
+      LOG.debug("Set RadixSpline index path to {}", path);
+      return this;
+    }
+
     public HoodieIndexConfig build() {
       hoodieIndexConfig.setDefaultValue(INDEX_TYPE, getDefaultIndexType(engineType));
       hoodieIndexConfig.setDefaults(HoodieIndexConfig.class.getName());

@@ -3,7 +3,8 @@ package org.apache.hudi.index.radixspl;
 import org.apache.hudi.common.model.HoodieKey;
 import org.apache.hudi.common.util.ValidationUtils;
 import org.jetbrains.annotations.NotNull;
-
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.io.*;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -11,6 +12,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class RadixSplineModel implements Serializable {
     private static final long serialVersionUID = 1L;
 
+    private static final Logger LOG = LoggerFactory.getLogger(RadixSplineModel.class);
     private final int radixBits;
     private final double splineMaxError;
     private final boolean globalIndex;
@@ -29,14 +31,18 @@ public class RadixSplineModel implements Serializable {
         this.radixBits = radixBits;
         this.splineMaxError = splineMaxError;
         this.globalIndex = globalIndex;
+        LOG.debug("Created RadixSplineModel radixBits={}, maxError={}, global={}"
+                , radixBits, splineMaxError, globalIndex);
     }
 
     public void addEntries(List<IndexEntry> entries) {
+        LOG.debug("Adding {} entries to model", entries.size());
         buffer.addAll(entries);
         built.set(false);
     }
 
     public synchronized void build() {
+        LOG.debug("Building RadixSpline model with {} buffered entries", buffer.size());
         if (buffer.isEmpty()) {
             this.splinePoints = new SplinePoint[0];
             this.radixTable = new int[(1 << radixBits) + 1];
@@ -58,9 +64,11 @@ public class RadixSplineModel implements Serializable {
         buildSplinePoints(keys, fileIds, offsets);
         buildRadixTable();
         built.set(true);
+        LOG.debug("Model build complete");
     }
 
     public Optional<IndexEntry> query(HoodieKey lookupKey) {
+        LOG.debug("Querying key {}", lookupKey);
         if (!built.get()) {
             build();
         }
@@ -77,10 +85,12 @@ public class RadixSplineModel implements Serializable {
                 }
             } else {
                 if (e.getKey().equals(lookupKey)) {
+                    LOG.debug("Found entry for key {}", lookupKey);
                     return Optional.of(e);
                 }
             }
         }
+        LOG.debug("No entry found for key {}", lookupKey);
         return Optional.empty();
     }
 
@@ -183,6 +193,7 @@ public class RadixSplineModel implements Serializable {
     }
 
     public void clear() {
+        LOG.debug("Clearing RadixSpline model");
         buffer.clear();
         splineLines.clear();
         splinePoints = null;
@@ -196,6 +207,8 @@ public class RadixSplineModel implements Serializable {
     }
 
     public boolean isBuilt() {
-        return built.get();
+        boolean b = built.get();
+        LOG.debug("isBuilt -> {}", b);
+        return b;
     }
 }

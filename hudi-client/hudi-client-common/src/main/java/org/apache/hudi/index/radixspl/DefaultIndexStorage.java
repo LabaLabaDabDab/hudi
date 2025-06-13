@@ -13,11 +13,14 @@ import java.io.ObjectOutputStream;
 import java.io.IOException;
 import java.util.Optional;
 import org.apache.hadoop.conf.Configuration;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 public class DefaultIndexStorage implements IndexStorage {
     private final Path indexPath;
     private final Configuration hadoopConf;
+    private static final Logger LOG = LoggerFactory.getLogger(DefaultIndexStorage.class);
 
     public DefaultIndexStorage(HoodieWriteConfig config) {
         this(config, config.getString(HoodieIndexConfig.RADIX_SPLINE_INDEX_PATH));
@@ -27,6 +30,7 @@ public class DefaultIndexStorage implements IndexStorage {
         Path path = new Path(indexFile);
         this.indexPath = path.isAbsolute() ? path : new Path(config.getBasePath(), indexFile);
         this.hadoopConf = HadoopConfigUtils.createHadoopConf(config.getProps());
+        LOG.info("RadixSpline index file set to {}", this.indexPath);
     }
 
     private FileSystem getFileSystem() throws IOException {
@@ -38,11 +42,14 @@ public class DefaultIndexStorage implements IndexStorage {
         try {
             FileSystem fs = getFileSystem();
             if (!fs.exists(indexPath)) {
+                LOG.debug("Index file {} does not exist", indexPath);
                 return Optional.empty();
             }
             try (FSDataInputStream in = fs.open(indexPath);
                  ObjectInputStream ois = new ObjectInputStream(in)) {
-                return Optional.of((RadixSplineModel) ois.readObject());
+                RadixSplineModel model = (RadixSplineModel) ois.readObject();
+                LOG.debug("Loaded RadixSplineModel from {}", indexPath);
+                return Optional.of(model);
             }
         } catch (IOException | ClassNotFoundException e) {
             throw new HoodieIndexException("Failed to load RadixSplineModel from " + indexPath, e);
@@ -61,6 +68,7 @@ public class DefaultIndexStorage implements IndexStorage {
                  ObjectOutputStream oos = new ObjectOutputStream(out)) {
                 oos.writeObject(model);
             }
+            LOG.debug("Saved RadixSplineModel to {}", indexPath);
         } catch (IOException e) {
             throw new HoodieIndexException("Failed to save RadixSplineModel to " + indexPath, e);
         }
@@ -73,6 +81,7 @@ public class DefaultIndexStorage implements IndexStorage {
             if (fs.exists(indexPath)) {
                 fs.delete(indexPath, false);
             }
+            LOG.debug("Deleted index file {}", indexPath);
         } catch (IOException e) {
             throw new HoodieIndexException("Failed to delete RadixSplineModel at " + indexPath, e);
         }
@@ -82,7 +91,9 @@ public class DefaultIndexStorage implements IndexStorage {
     public boolean indexExists() {
         try {
             FileSystem fs = getFileSystem();
-            return fs.exists(indexPath);
+            boolean exists = fs.exists(indexPath);
+            LOG.debug("Index file {} exists -> {}", indexPath, exists);
+            return exists;
         } catch (IOException e) {
             throw new HoodieIndexException("Failed to check existence of RadixSplineModel at " + indexPath, e);
         }

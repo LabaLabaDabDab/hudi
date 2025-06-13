@@ -173,6 +173,9 @@ public class StreamerUtil {
         .withBucketNum(String.valueOf(conf.getInteger(FlinkOptions.BUCKET_INDEX_NUM_BUCKETS)))
         .withRecordKeyField(conf.getString(FlinkOptions.RECORD_KEY_FIELD))
         .withIndexKeyField(OptionsResolver.getIndexKeyField(conf))
+        .withRadixSplineRadixBits(conf.getInteger(FlinkOptions.RADIX_SPLINE_INDEX_RADIX_BITS))
+        .withRadixSplineMaxError(conf.getDouble(FlinkOptions.RADIX_SPLINE_INDEX_MAX_ERROR))
+        .withRadixSplineIndexPath(conf.getString(FlinkOptions.RADIX_SPLINE_INDEX_PATH))
         .withBucketIndexEngineType(OptionsResolver.getBucketEngineType(conf))
         .withEngineType(EngineType.FLINK)
         .build();

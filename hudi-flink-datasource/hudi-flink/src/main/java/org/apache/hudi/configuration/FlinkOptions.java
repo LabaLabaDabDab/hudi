@@ -474,6 +474,27 @@ public class FlinkOptions extends HoodieConfig {
       .defaultValue(4) // default 4 buckets per partition
       .withDescription("Hudi bucket number per partition. Only affected if using Hudi bucket index.");
 
+  @AdvancedConfig
+  public static final ConfigOption<Integer> RADIX_SPLINE_INDEX_RADIX_BITS = ConfigOptions
+          .key(HoodieIndexConfig.RADIX_SPLINE_INDEX_RADIX_BITS.key())
+          .intType()
+          .defaultValue(HoodieIndexConfig.RADIX_SPLINE_INDEX_RADIX_BITS.defaultValue())
+          .withDescription("Number of bits for the radix table in Radix Spline index.");
+
+  @AdvancedConfig
+  public static final ConfigOption<Double> RADIX_SPLINE_INDEX_MAX_ERROR = ConfigOptions
+          .key(HoodieIndexConfig.RADIX_SPLINE_INDEX_MAX_ERROR.key())
+          .doubleType()
+          .defaultValue(HoodieIndexConfig.RADIX_SPLINE_INDEX_MAX_ERROR.defaultValue())
+          .withDescription("Maximum allowed approximation error for the Radix Spline index.");
+
+  @AdvancedConfig
+  public static final ConfigOption<String> RADIX_SPLINE_INDEX_PATH = ConfigOptions
+          .key(HoodieIndexConfig.RADIX_SPLINE_INDEX_PATH.key())
+          .stringType()
+          .defaultValue(HoodieIndexConfig.RADIX_SPLINE_INDEX_PATH.defaultValue())
+          .withDescription("Relative path to persist Radix Spline index file.");
+
   public static final ConfigOption<String> PARTITION_PATH_FIELD = ConfigOptions
       .key(KeyGeneratorOptions.PARTITIONPATH_FIELD_NAME.key())
       .stringType()
