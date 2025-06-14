@@ -31,8 +31,7 @@ public class RadixSplineModel implements Serializable {
         this.radixBits = radixBits;
         this.splineMaxError = splineMaxError;
         this.globalIndex = globalIndex;
-        LOG.debug("Created RadixSplineModel radixBits={}, maxError={}, global={}"
-                , radixBits, splineMaxError, globalIndex);
+        LOG.debug("Created RadixSplineModel radixBits={}, maxError={}, global={}", radixBits, splineMaxError, globalIndex);
     }
 
     public void addEntries(List<IndexEntry> entries) {
@@ -65,6 +64,8 @@ public class RadixSplineModel implements Serializable {
         buildRadixTable();
         built.set(true);
         LOG.debug("Model build complete");
+        LOG.debug("Radix table: {}", Arrays.toString(radixTable));
+        LOG.debug("Spline points: {}", Arrays.toString(splinePoints));
     }
 
     public Optional<IndexEntry> query(HoodieKey lookupKey) {
@@ -95,6 +96,7 @@ public class RadixSplineModel implements Serializable {
     }
 
     private @NotNull SearchInterval getSearchInterval(long k) {
+        LOG.debug("Finding search interval for {}", k);
         if (splinePoints.length == 0) {
             return new SearchInterval(0, 0);
         }
@@ -115,6 +117,7 @@ public class RadixSplineModel implements Serializable {
     }
 
     private void buildSplinePoints(long[] keys, String[] fileIds, int[] offsets) {
+        LOG.debug("Building spline points for {} keys", keys.length);
         List<SplinePoint> pts = new ArrayList<>();
         pts.add(new SplinePoint(keys[0], offsets[0], extractRadix(keys[0]), fileIds[0]));
         int last = 0;
@@ -149,6 +152,7 @@ public class RadixSplineModel implements Serializable {
     }
 
     private void buildRadixTable() {
+        LOG.debug("Building radix table with {} bits", radixBits);
         int size = (1 << radixBits) + 1;
         radixTable = new int[size];
         int cur = 0;
@@ -161,6 +165,7 @@ public class RadixSplineModel implements Serializable {
         while (cur < size) {
             radixTable[cur++] = splinePoints.length - 1;
         }
+        LOG.debug("Radix table build complete");
     }
 
     private long toNumeric(HoodieKey key) {
@@ -170,17 +175,23 @@ public class RadixSplineModel implements Serializable {
         } else {
             s = key.getPartitionPath() + '|' + key.getRecordKey();
         }
-        return (long) (s.hashCode()) & 0xFFFFFFFFL;
+        long numeric = (long) (s.hashCode()) & 0xFFFFFFFFL;
+        LOG.debug("Converted key {} to numeric {}", key, numeric);
+        return numeric;
     }
 
     private int extractRadix(long numericKey) {
-        return (int) (numericKey >>> (Integer.SIZE - radixBits));
+        int r = (int) (numericKey >>> (Integer.SIZE - radixBits));
+        LOG.debug("Extracted radix {} from numeric {}", r, numericKey);
+        return r;
     }
 
     private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {
+        LOG.debug("Reading RadixSplineModel from stream");
         in.defaultReadObject();
         built = new AtomicBoolean(false);
         splineLines = new ArrayList<>();
+        LOG.debug("Deserialized RadixSplineModel; marked as not built");
     }
 
     public static class SearchInterval {
@@ -204,6 +215,14 @@ public class RadixSplineModel implements Serializable {
 
     public List<IndexEntry> getEntries() {
         return new ArrayList<>(buffer);
+    }
+
+    public int[] getRadixTable() {
+        return radixTable == null ? new int[0] : Arrays.copyOf(radixTable, radixTable.length);
+    }
+
+    public SplinePoint[] getSplinePoints() {
+        return splinePoints == null ? new SplinePoint[0] : Arrays.copyOf(splinePoints, splinePoints.length);
     }
 
     public boolean isBuilt() {
