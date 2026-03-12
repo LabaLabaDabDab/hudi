@@ -1,0 +1,131 @@
+services:
+  namenode:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        HADOOP_VERSION: "3.3.6"
+    container_name: hudi-namenode
+    hostname: namenode
+    environment:
+      HDFS_NAMENODE_HOST: namenode
+      HDFS_NAMENODE_RPC_PORT: 9000
+      HDFS_NAMENODE_HTTP_PORT: 9870
+      HDFS_REPLICATION: 1
+    ports:
+      - "9870:9870"
+      - "9000:9000"
+    volumes:
+      - namenode-data:/data/dfs/name
+    command: ["/opt/scripts/run-namenode.sh"]
+
+  datanode:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        HADOOP_VERSION: "3.3.6"
+    container_name: hudi-datanode
+    hostname: datanode
+    depends_on:
+      - namenode
+    environment:
+      HDFS_NAMENODE_HOST: namenode
+      HDFS_NAMENODE_RPC_PORT: 9000
+      HDFS_NAMENODE_HTTP_PORT: 9870
+      HDFS_REPLICATION: 1
+    ports:
+      - "9864:9864"
+    volumes:
+      - datanode-data:/data/dfs/data
+    command: ["/opt/scripts/run-datanode.sh"]
+
+  spark-master:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        HADOOP_VERSION: "3.3.6"
+    container_name: hudi-spark-master
+    hostname: spark-master
+    depends_on:
+      - namenode
+    environment:
+      HDFS_NAMENODE_HOST: namenode
+      HDFS_NAMENODE_RPC_PORT: 9000
+      HDFS_NAMENODE_HTTP_PORT: 9870
+      HDFS_REPLICATION: 1
+      SPARK_MASTER_HOST: spark-master
+      SPARK_MASTER_PORT: 7077
+      SPARK_MASTER_WEBUI_PORT: 8080
+    ports:
+      - "8080:8080"
+      - "7077:7077"
+    volumes:
+      - spark-events:/workspace/spark-events
+    command: ["/opt/scripts/run-spark-master.sh"]
+
+  spark-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        HADOOP_VERSION: "3.3.6"
+    container_name: hudi-spark-worker
+    hostname: spark-worker
+    depends_on:
+      - spark-master
+    environment:
+      HDFS_NAMENODE_HOST: namenode
+      HDFS_NAMENODE_RPC_PORT: 9000
+      HDFS_NAMENODE_HTTP_PORT: 9870
+      HDFS_REPLICATION: 1
+      SPARK_MASTER_HOST: spark-master
+      SPARK_MASTER_PORT: 7077
+      SPARK_WORKER_WEBUI_PORT: 8081
+      SPARK_WORKER_CORES: 2
+      SPARK_WORKER_MEMORY: 4g
+    ports:
+      - "8081:8081"
+    volumes:
+      - spark-events:/workspace/spark-events
+    command: ["/opt/scripts/run-spark-worker.sh"]
+
+  hudi-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        HADOOP_VERSION: "3.3.6"
+    container_name: hudi-dev
+    hostname: hudi-dev
+    depends_on:
+      - namenode
+      - spark-master
+      - spark-worker
+    stdin_open: true
+    tty: true
+    user: "0:0"
+    environment:
+      HDFS_NAMENODE_HOST: namenode
+      HDFS_NAMENODE_RPC_PORT: 9000
+      HDFS_NAMENODE_HTTP_PORT: 9870
+      HDFS_REPLICATION: 1
+      SPARK_MASTER_HOST: spark-master
+      SPARK_MASTER_PORT: 7077
+      MAVEN_OPTS: "-Xmx4g"
+    volumes:
+      - .:/workspace/hudi
+      - hudi-bench:/workspace/hudi-bench
+      - spark-events:/workspace/spark-events
+      - m2-cache:/root/.m2
+    ports:
+      - "4040:4040"
+    command: ["/opt/scripts/run-hudi-dev.sh"]
+
+volumes:
+  namenode-data:
+  datanode-data:
+  spark-events:
+  hudi-bench:
+  m2-cache:
