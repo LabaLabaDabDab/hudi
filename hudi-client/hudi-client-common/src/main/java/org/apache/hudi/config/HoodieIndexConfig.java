@@ -57,6 +57,7 @@ import static org.apache.hudi.index.HoodieIndex.IndexType.INMEMORY;
 import static org.apache.hudi.index.HoodieIndex.IndexType.RECORD_INDEX;
 import static org.apache.hudi.index.HoodieIndex.IndexType.RECORD_LEVEL_INDEX;
 import static org.apache.hudi.index.HoodieIndex.IndexType.SIMPLE;
+import static org.apache.hudi.index.HoodieIndex.IndexType.RADIX_SPLINE;
 
 /**
  * Indexing related config.
@@ -76,7 +77,7 @@ public class HoodieIndexConfig extends HoodieConfig {
       // Builder#getDefaultIndexType has already set it according to engine type
       .noDefaultValue()
       .withValidValues(INMEMORY.name(), BLOOM.name(), GLOBAL_BLOOM.name(), SIMPLE.name(), GLOBAL_SIMPLE.name(),
-          BUCKET.name(), FLINK_STATE.name(), RECORD_INDEX.name(), RECORD_LEVEL_INDEX.name(), GLOBAL_RECORD_LEVEL_INDEX.name())
+          BUCKET.name(), FLINK_STATE.name(), RECORD_INDEX.name(), RECORD_LEVEL_INDEX.name(), GLOBAL_RECORD_LEVEL_INDEX.name(), RADIX_SPLINE.name())
       .withDocumentation(HoodieIndex.IndexType.class);
 
 
@@ -258,6 +259,18 @@ public class HoodieIndexConfig extends HoodieConfig {
       .markAdvanced()
       .withDocumentation("Only applies if index type is GLOBAL_BLOOM or GLOBAL_SIMPLE. "
           + "This controls the parallelism for deduplication during indexing where more than 1 record could be tagged due to partition update.");
+
+  public static final ConfigProperty<Integer> RADIX_SPLINE_INDEX_MAX_ERROR = ConfigProperty
+      .key("hoodie.index.radix_spline.max_error")
+      .defaultValue(8)
+      .markAdvanced()
+      .withDocumentation("Maximum spline error for RADIX_SPLINE index.");
+
+  public static final ConfigProperty<Integer> RADIX_SPLINE_INDEX_RADIX_BITS = ConfigProperty
+      .key("hoodie.index.radix_spline.radix_bits")
+      .defaultValue(10)
+      .markAdvanced()
+      .withDocumentation("Number of radix bits for RADIX_SPLINE index.");
 
   /**
    * ***** Bucket Index Configs *****

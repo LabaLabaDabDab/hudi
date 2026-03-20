@@ -212,7 +212,12 @@ public abstract class HoodieIndex<I, O> implements Serializable {
         + "pair of partition path and record keys will uniquely map to a location using "
         + "this index. If users expect record keys to be unique across all partitions, "
         + "use `GLOBAL_RECORD_LEVEL_INDEX` instead.")
-    RECORD_LEVEL_INDEX
+    RECORD_LEVEL_INDEX,
+
+    @EnumFieldDescription("Uses a radix spline based index for fast record-key lookups "
+        + "over sorted keys. Intended for scalable point lookups with approximate "
+        + "position narrowing before exact verification.")
+    RADIX_SPLINE
   }
 
   @EnumDescription("Determines the type of bucketing or hashing to use when `hoodie.index.type`"

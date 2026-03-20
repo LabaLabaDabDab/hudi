@@ -27,6 +27,7 @@ import org.apache.hudi.index.bloom.SparkHoodieBloomIndexHelper;
 import org.apache.hudi.index.bucket.HoodieSimpleBucketIndex;
 import org.apache.hudi.index.bucket.HoodieSparkConsistentBucketIndex;
 import org.apache.hudi.index.inmemory.HoodieInMemoryHashIndex;
+import org.apache.hudi.index.radix.HoodieRadixSplineIndex;
 import org.apache.hudi.index.simple.HoodieGlobalSimpleIndex;
 import org.apache.hudi.index.simple.HoodieSimpleIndex;
 import org.apache.hudi.keygen.factory.HoodieSparkKeyGeneratorFactory;
@@ -70,6 +71,8 @@ public final class SparkHoodieIndexFactory {
         return new SparkMetadataTableGlobalRecordLevelIndex(config);
       case RECORD_LEVEL_INDEX:
         return new SparkMetadataTableRecordLevelIndex(config);
+      case RADIX_SPLINE:
+        return new HoodieRadixSplineIndex(config);
       default:
         throw new HoodieIndexException("Index type unspecified, set " + config.getIndexType());
     }

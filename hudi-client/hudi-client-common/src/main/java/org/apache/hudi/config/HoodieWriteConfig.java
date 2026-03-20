@@ -2030,6 +2030,14 @@ public class HoodieWriteConfig extends HoodieConfig {
     return HoodieIndex.IndexType.valueOf(getString(HoodieIndexConfig.INDEX_TYPE));
   }
 
+  public int getRadixSplineIndexMaxError() {
+    return getInt(HoodieIndexConfig.RADIX_SPLINE_INDEX_MAX_ERROR);
+  }
+
+  public int getRadixSplineIndexRadixBits() {
+    return getInt(HoodieIndexConfig.RADIX_SPLINE_INDEX_RADIX_BITS);
+  }
+
   public String getBucketIndexPartitionExpression() {
     return getString(HoodieIndexConfig.BUCKET_INDEX_PARTITION_EXPRESSIONS);
   }
@@ -3211,6 +3219,16 @@ public class HoodieWriteConfig extends HoodieConfig {
     public Builder withStorageConfig(HoodieStorageConfig storageConfig) {
       writeConfig.getProps().putAll(storageConfig.getProps());
       isStorageConfigSet = true;
+      return this;
+    }
+
+    public Builder withRadixSplineIndexMaxError(int maxError) {
+      writeConfig.setValue(HoodieIndexConfig.RADIX_SPLINE_INDEX_MAX_ERROR, String.valueOf(maxError));
+      return this;
+    }
+
+    public Builder withRadixSplineIndexRadixBits(int radixBits) {
+      writeConfig.setValue(HoodieIndexConfig.RADIX_SPLINE_INDEX_RADIX_BITS, String.valueOf(radixBits));
       return this;
     }
 
