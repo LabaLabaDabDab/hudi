@@ -164,6 +164,56 @@ public class TestHoodieRadixSplineIndexSchemaContract {
     assertTrue(e.getMessage().contains("leading '+'"));
   }
 
+  @Test
+  public void testNullableUnionStringRecordKeyFieldIsAccepted() throws Exception {
+    Schema nullableString = Schema.createUnion(
+        Arrays.asList(Schema.create(Schema.Type.NULL), Schema.create(Schema.Type.STRING)));
+
+    HoodieRadixSplineIndex index = new HoodieRadixSplineIndex(
+        config("id", recordSchema("id", nullableString)));
+
+    invokeEnsureKeyEncoderInitialized(index);
+  }
+
+  @Test
+  public void testComplexUnionRecordKeyFieldIsRejected() {
+    Schema complexUnion = Schema.createUnion(
+        Arrays.asList(
+            Schema.create(Schema.Type.NULL),
+            Schema.create(Schema.Type.STRING),
+            Schema.create(Schema.Type.LONG)));
+
+    HoodieRadixSplineIndex index = new HoodieRadixSplineIndex(
+        config("id", recordSchema("id", complexUnion)));
+
+    IllegalArgumentException e = assertThrows(
+        IllegalArgumentException.class,
+        () -> invokeEnsureKeyEncoderInitialized(index));
+
+    assertTrue(e.getMessage().contains("complex union"));
+  }
+
+  @Test
+  public void testMissingNestedRecordKeyFieldIsRejected() {
+    Schema nested = Schema.createRecord("Nested", null, "org.apache.hudi.index.radix", false);
+    nested.setFields(Arrays.asList(
+        new Schema.Field("present", Schema.create(Schema.Type.LONG), null, (Object) null)
+    ));
+
+    Schema root = Schema.createRecord("Root", null, "org.apache.hudi.index.radix", false);
+    root.setFields(Arrays.asList(
+        new Schema.Field("a", nested, null, (Object) null)
+    ));
+
+    HoodieRadixSplineIndex index = new HoodieRadixSplineIndex(config("a.missing", root));
+
+    IllegalArgumentException e = assertThrows(
+        IllegalArgumentException.class,
+        () -> invokeEnsureKeyEncoderInitialized(index));
+
+    assertTrue(e.getMessage().contains("field 'missing'"));
+  }
+
   private static HoodieWriteConfig config(String recordKeyField, Schema schema) {
     return HoodieWriteConfig.newBuilder()
         .withPath("file:///tmp/hudi-radix-schema-contract")

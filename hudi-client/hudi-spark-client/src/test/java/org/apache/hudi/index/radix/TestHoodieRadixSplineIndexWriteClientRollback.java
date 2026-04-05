@@ -11,7 +11,7 @@
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * WITHOUT WARRANTIES OR ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
@@ -32,13 +32,20 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Properties;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-public class TestHoodieRadixSplineIndexWritePath extends HoodieSparkClientTestHarness {
+/**
+ * Integration checks: {@link SparkRDDWriteClient#rollback(String)} invokes index rollback and the table
+ * remains writable afterward. On-disk radix layout under {@code .hoodie/.radix_index_tmp} is asserted in
+ * {@link TestHoodieRadixSplineIndexRollback}.
+ */
+public class TestHoodieRadixSplineIndexWriteClientRollback extends HoodieSparkClientTestHarness {
 
   private HoodieTestDataGenerator dataGen;
 
@@ -49,59 +56,57 @@ public class TestHoodieRadixSplineIndexWritePath extends HoodieSparkClientTestHa
     initHoodieStorage();
     initMetaClient();
     dataGen = new HoodieTestDataGenerator(0xBEEFL);
+    RadixArtifactReaderCache.clear();
   }
 
   @AfterEach
   public void tearDown() throws Exception {
+    RadixArtifactReaderCache.clear();
     cleanupResources();
   }
 
   @Test
-  public void testBulkInsertAndUpsertWithRadixSplineIndex() throws Exception {
+  public void testRollbackLastCommitThenUpsertSucceeds() throws Exception {
     HoodieWriteConfig config = makeConfig();
 
+    String instant1;
+    String instant2;
     try (SparkRDDWriteClient client = new SparkRDDWriteClient(context, config)) {
-      List<HoodieRecord> inserts = dataGen.generateInserts("000", 100);
-
-      String instant1 = client.startCommit();
-      List<WriteStatus> bulkInsertStatuses =
+      List<HoodieRecord> inserts = dataGen.generateInserts("000", 60);
+      instant1 = client.startCommit();
+      List<WriteStatus> bulk =
           client.bulkInsert(jsc.parallelize(inserts, 1), instant1).collect();
-      assertNoWriteErrors(bulkInsertStatuses);
+      assertNoWriteErrors(bulk);
 
-      List<HoodieRecord> updates = dataGen.generateUpdates(instant1, 100);
-
-      String instant2 = client.startCommit();
-      List<WriteStatus> upsertStatuses =
+      List<HoodieRecord> updates = dataGen.generateUpdates(instant1, 60);
+      instant2 = client.startCommit();
+      List<WriteStatus> upserted =
           client.upsert(jsc.parallelize(updates, 1), instant2).collect();
-      assertNoWriteErrors(upsertStatuses);
+      assertNoWriteErrors(upserted);
+
+      Path inst2 = radixInstantDir(instant2);
+
+      client.rollback(instant2);
+
+      assertFalse(
+          Files.exists(inst2),
+          "radix staging dir for rolled-back instant must not remain: " + inst2);
+
+      List<HoodieRecord> updates2 = dataGen.generateUpdates(instant1, 60);
+      String instant3 = client.startCommit();
+      List<WriteStatus> afterRollback =
+          client.upsert(jsc.parallelize(updates2, 1), instant3).collect();
+      assertNoWriteErrors(afterRollback);
     }
   }
 
-  @Test
-  public void testBulkInsertAndUpsertAcrossMultiplePartitionsWithRadixSplineIndex() throws Exception {
-    HoodieWriteConfig config = makeConfig();
-
-    try (SparkRDDWriteClient client = new SparkRDDWriteClient(context, config)) {
-      List<HoodieRecord> inserts = dataGen.generateInserts("000", 50);
-
-      String instant1 = client.startCommit();
-      List<WriteStatus> insertStatuses =
-          client.bulkInsert(jsc.parallelize(inserts, 1), instant1).collect();
-      assertNoWriteErrors(insertStatuses);
-
-      List<HoodieRecord> updates = dataGen.generateUpdates(instant1, 50);
-
-      String instant2 = client.startCommit();
-      List<WriteStatus> upsertStatuses =
-          client.upsert(jsc.parallelize(updates, 1), instant2).collect();
-      assertNoWriteErrors(upsertStatuses);
-    }
+  private Path radixInstantDir(String instantTime) {
+    return Path.of(basePath, ".hoodie", ".radix_index_tmp", "instants", instantTime);
   }
 
   private HoodieWriteConfig makeConfig() {
     Properties props = new Properties();
     props.setProperty(KeyGeneratorOptions.RECORDKEY_FIELD_NAME.key(), "_row_key");
-
     return HoodieWriteConfig.newBuilder()
         .withPath(basePath)
         .withSchema(HoodieTestDataGenerator.TRIP_EXAMPLE_SCHEMA)

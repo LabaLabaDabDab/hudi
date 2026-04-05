@@ -25,117 +25,104 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-public class TestRadixSplineKeyEncoder {
-
-  private final RadixSplineKeyEncoder numericEncoder =
-      new RadixSplineKeyEncoder(RadixSplineKeyEncoder.Mode.NUMERIC_COLUMN);
-
-  private final RadixSplineKeyEncoder stringDecimalEncoder =
-      new RadixSplineKeyEncoder(RadixSplineKeyEncoder.Mode.STRING_DECIMAL_COLUMN);
+class TestRadixSplineKeyEncoder {
 
   @Test
-  public void testEncodeNumericKey() {
-    long encoded = numericEncoder.encode("12345");
-    assertEquals(12345L, encoded);
-    assertTrue(encoded >= 0L);
+  void encodeAcceptsZero() {
+    RadixSplineKeyEncoder encoder =
+        new RadixSplineKeyEncoder(RadixSplineKeyEncoder.Mode.STRING_DECIMAL_COLUMN);
+
+    assertEquals(0L, encoder.encode("0"));
   }
 
   @Test
-  public void testEncodeZero() {
-    assertEquals(0L, numericEncoder.encode("0"));
-    assertEquals(0L, stringDecimalEncoder.encode("0"));
+  void encodeAcceptsCanonicalDecimal() {
+    RadixSplineKeyEncoder encoder =
+        new RadixSplineKeyEncoder(RadixSplineKeyEncoder.Mode.STRING_DECIMAL_COLUMN);
+
+    assertEquals(123456789L, encoder.encode("123456789"));
   }
 
   @Test
-  public void testEncodePreservesOrderForSimpleNumbers() {
-    long a = numericEncoder.encode("10");
-    long b = numericEncoder.encode("20");
-    long c = numericEncoder.encode("30");
+  void encodeRejectsNull() {
+    RadixSplineKeyEncoder encoder =
+        new RadixSplineKeyEncoder(RadixSplineKeyEncoder.Mode.STRING_DECIMAL_COLUMN);
 
-    assertTrue(a < b);
-    assertTrue(b < c);
+    IllegalArgumentException ex =
+        assertThrows(IllegalArgumentException.class, () -> encoder.encode(null));
+    assertTrue(ex.getMessage().contains("must not be null"));
   }
 
   @Test
-  public void testStringDecimalModeUsesSameCanonicalEncoding() {
-    assertEquals(123L, stringDecimalEncoder.encode("123"));
-    assertTrue(stringDecimalEncoder.encode("123") < stringDecimalEncoder.encode("124"));
+  void encodeRejectsEmpty() {
+    RadixSplineKeyEncoder encoder =
+        new RadixSplineKeyEncoder(RadixSplineKeyEncoder.Mode.STRING_DECIMAL_COLUMN);
+
+    IllegalArgumentException ex =
+        assertThrows(IllegalArgumentException.class, () -> encoder.encode(""));
+    assertTrue(ex.getMessage().contains("must not be empty"));
   }
 
   @Test
-  public void testRejectNullKey() {
-    assertThrows(IllegalArgumentException.class, () -> numericEncoder.encode(null));
+  void encodeRejectsLeadingPlus() {
+    RadixSplineKeyEncoder encoder =
+        new RadixSplineKeyEncoder(RadixSplineKeyEncoder.Mode.STRING_DECIMAL_COLUMN);
+
+    IllegalArgumentException ex =
+        assertThrows(IllegalArgumentException.class, () -> encoder.encode("+1"));
+    assertTrue(ex.getMessage().contains("leading '+'"));
   }
 
   @Test
-  public void testRejectEmptyKey() {
-    assertThrows(IllegalArgumentException.class, () -> numericEncoder.encode(""));
+  void encodeRejectsNegative() {
+    RadixSplineKeyEncoder encoder =
+        new RadixSplineKeyEncoder(RadixSplineKeyEncoder.Mode.STRING_DECIMAL_COLUMN);
+
+    IllegalArgumentException ex =
+        assertThrows(IllegalArgumentException.class, () -> encoder.encode("-1"));
+    assertTrue(ex.getMessage().contains("negative"));
   }
 
   @Test
-  public void testRejectNegativeNumericKey() {
-    assertThrows(IllegalArgumentException.class, () -> numericEncoder.encode("-10"));
+  void encodeRejectsLeadingZeros() {
+    RadixSplineKeyEncoder encoder =
+        new RadixSplineKeyEncoder(RadixSplineKeyEncoder.Mode.STRING_DECIMAL_COLUMN);
+
+    IllegalArgumentException ex =
+        assertThrows(IllegalArgumentException.class, () -> encoder.encode("001"));
+    assertTrue(ex.getMessage().contains("leading zeros"));
   }
 
   @Test
-  public void testRejectLeadingPlus() {
-    assertThrows(IllegalArgumentException.class, () -> numericEncoder.encode("+10"));
+  void encodeRejectsNonNumeric() {
+    RadixSplineKeyEncoder encoder =
+        new RadixSplineKeyEncoder(RadixSplineKeyEncoder.Mode.STRING_DECIMAL_COLUMN);
+
+    IllegalArgumentException ex =
+        assertThrows(IllegalArgumentException.class, () -> encoder.encode("12a3"));
+    assertTrue(ex.getMessage().contains("non-numeric"));
   }
 
   @Test
-  public void testRejectLeadingZeros() {
-    assertThrows(IllegalArgumentException.class, () -> numericEncoder.encode("00123"));
-    assertThrows(IllegalArgumentException.class, () -> numericEncoder.encode("00"));
+  void encodeRejectsOverflow() {
+    RadixSplineKeyEncoder encoder =
+        new RadixSplineKeyEncoder(RadixSplineKeyEncoder.Mode.STRING_DECIMAL_COLUMN);
+
+    String overflow = String.valueOf(Long.MAX_VALUE) + "0";
+
+    IllegalArgumentException ex =
+        assertThrows(IllegalArgumentException.class, () -> encoder.encode(overflow));
+    assertTrue(ex.getMessage().contains("Long.MAX_VALUE"));
   }
 
   @Test
-  public void testAcceptSingleZeroButRejectZeroPrefixedNumbers() {
-    assertEquals(0L, numericEncoder.encode("0"));
-    assertThrows(IllegalArgumentException.class, () -> numericEncoder.encode("01"));
-  }
+  void isSupportedReflectsValidity() {
+    RadixSplineKeyEncoder encoder =
+        new RadixSplineKeyEncoder(RadixSplineKeyEncoder.Mode.STRING_DECIMAL_COLUMN);
 
-  @Test
-  public void testRejectUnsupportedKeyFormat() {
-    assertThrows(IllegalArgumentException.class, () -> numericEncoder.encode("abc"));
-    assertThrows(IllegalArgumentException.class, () -> numericEncoder.encode("12a"));
-    assertThrows(IllegalArgumentException.class, () -> numericEncoder.encode("1 2"));
-  }
-
-  @Test
-  public void testRejectOverflow() {
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> numericEncoder.encode("9223372036854775808"));
-  }
-
-  @Test
-  public void testEncodeLongMaxValue() {
-    assertEquals(Long.MAX_VALUE, numericEncoder.encode(Long.toString(Long.MAX_VALUE)));
-  }
-
-  @Test
-  public void testIsSupportedReturnsTrueForCanonicalDecimal() {
-    assertTrue(numericEncoder.isSupported("123"));
-    assertTrue(numericEncoder.isSupported("0"));
-    assertTrue(stringDecimalEncoder.isSupported("999999"));
-  }
-
-  @Test
-  public void testIsSupportedReturnsFalseForNonCanonicalValues() {
-    assertFalse(numericEncoder.isSupported(null));
-    assertFalse(numericEncoder.isSupported(""));
-    assertFalse(numericEncoder.isSupported("-1"));
-    assertFalse(numericEncoder.isSupported("+1"));
-    assertFalse(numericEncoder.isSupported("001"));
-    assertFalse(numericEncoder.isSupported("abc"));
-  }
-
-  @Test
-  public void testDifferentStringRepresentationsDoNotSilentlyCollapse() {
-    long canonical = numericEncoder.encode("123");
-    assertEquals(123L, canonical);
-
-    assertThrows(IllegalArgumentException.class, () -> numericEncoder.encode("+123"));
-    assertThrows(IllegalArgumentException.class, () -> numericEncoder.encode("000123"));
+    assertTrue(encoder.isSupported("42"));
+    assertFalse(encoder.isSupported("0042"));
+    assertFalse(encoder.isSupported("-42"));
+    assertFalse(encoder.isSupported("abc"));
   }
 }

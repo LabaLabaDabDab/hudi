@@ -87,17 +87,22 @@ final class RadixSplineModel implements Serializable {
   }
 
   static RadixSplineModel build(long[] sortedKeys, int maxError, int radixBits) {
+    Objects.requireNonNull(sortedKeys, "sortedKeys must not be null");
+    return build(new InMemoryKeyAccessor(sortedKeys), maxError, radixBits);
+  }
+
+  static RadixSplineModel build(SortedKeyAccessor sortedKeys, int maxError, int radixBits) {
     validateInputs(sortedKeys, maxError, radixBits);
 
     SplineData splineData = buildSplinePoints(sortedKeys, maxError);
     RadixDirectory radixDirectory = buildRadixDirectory(splineData.keys, radixBits);
 
     return new RadixSplineModel(
-        sortedKeys.length,
+        sortedKeys.size(),
         maxError,
         radixBits,
-        sortedKeys[0],
-        sortedKeys[sortedKeys.length - 1],
+        sortedKeys.keyAt(0),
+        sortedKeys.keyAt(sortedKeys.size() - 1),
         splineData.keys,
         splineData.positions,
         radixDirectory.minIndex,
@@ -105,8 +110,62 @@ final class RadixSplineModel implements Serializable {
     );
   }
 
+  static RadixSplineModel fromSerializedForm(
+      int size,
+      int maxError,
+      int radixBits,
+      long minKey,
+      long maxKey,
+      long[] splineKeys,
+      int[] splinePositions,
+      int[] radixMinIndex,
+      int[] radixMaxIndex) {
+    return new RadixSplineModel(
+        size,
+        maxError,
+        radixBits,
+        minKey,
+        maxKey,
+        splineKeys,
+        splinePositions,
+        radixMinIndex,
+        radixMaxIndex);
+  }
+
   int size() {
     return size;
+  }
+
+  int maxError() {
+    return maxError;
+  }
+
+  int radixBits() {
+    return radixBits;
+  }
+
+  long minKey() {
+    return minKey;
+  }
+
+  long maxKey() {
+    return maxKey;
+  }
+
+  long[] splineKeys() {
+    return splineKeys;
+  }
+
+  int[] splinePositions() {
+    return splinePositions;
+  }
+
+  int[] radixMinIndex() {
+    return radixMinIndex;
+  }
+
+  int[] radixMaxIndex() {
+    return radixMaxIndex;
   }
 
   SearchBound getSearchBound(long key) {
@@ -310,6 +369,64 @@ final class RadixSplineModel implements Serializable {
     return new SplineData(splineKeys.toArray(), splinePositions.toArray());
   }
 
+  private static SplineData buildSplinePoints(SortedKeyAccessor keys, int maxError) {
+    LongArrayBuilder splineKeys = new LongArrayBuilder(Math.min(keys.size(), 1024));
+    IntArrayBuilder splinePositions = new IntArrayBuilder(Math.min(keys.size(), 1024));
+
+    splineKeys.add(keys.keyAt(0));
+    splinePositions.add(0);
+
+    int basePos = 0;
+    long baseKey = keys.keyAt(0);
+
+    double pMin = Double.NEGATIVE_INFINITY;
+    double pMax = Double.POSITIVE_INFINITY;
+
+    for (int i = 1; i < keys.size(); i++) {
+      long key = keys.keyAt(i);
+      long dx = key - baseKey;
+
+      if (dx <= 0) {
+        throw new IllegalArgumentException("sortedKeys must be strictly increasing");
+      }
+
+      double localMin = slope(baseKey, basePos, key, i - maxError);
+      double localMax = slope(baseKey, basePos, key, i + maxError);
+
+      double nextPMin = Math.max(pMin, localMin);
+      double nextPMax = Math.min(pMax, localMax);
+
+      if (nextPMin > nextPMax) {
+        int prevPos = i - 1;
+
+        if (splinePositions.getLast() != prevPos) {
+          splineKeys.add(keys.keyAt(prevPos));
+          splinePositions.add(prevPos);
+        }
+
+        basePos = prevPos;
+        baseKey = keys.keyAt(basePos);
+
+        pMin = Double.NEGATIVE_INFINITY;
+        pMax = Double.POSITIVE_INFINITY;
+
+        i = prevPos;
+        continue;
+      }
+
+      pMin = nextPMin;
+      pMax = nextPMax;
+    }
+
+    int lastPos = keys.size() - 1;
+    if (splinePositions.getLast() != lastPos) {
+      splineKeys.add(keys.keyAt(lastPos));
+      splinePositions.add(lastPos);
+    }
+
+    return new SplineData(splineKeys.toArray(), splinePositions.toArray());
+  }
+
   private static RadixDirectory buildRadixDirectory(long[] splineKeys, int radixBits) {
     if (radixBits < 0 || radixBits > 20) {
       throw new IllegalArgumentException("radixBits must be in [0, 20]");
@@ -363,6 +480,32 @@ final class RadixSplineModel implements Serializable {
     long prev = -1L;
     for (int i = 0; i < sortedKeys.length; i++) {
       long key = sortedKeys[i];
+      if (key < 0) {
+        throw new IllegalArgumentException("sortedKeys must contain only non-negative values");
+      }
+      if (i > 0 && key <= prev) {
+        throw new IllegalArgumentException("sortedKeys must be strictly increasing");
+      }
+      prev = key;
+    }
+  }
+
+  private static void validateInputs(SortedKeyAccessor sortedKeys, int maxError, int radixBits) {
+    Objects.requireNonNull(sortedKeys, "sortedKeys must not be null");
+
+    if (sortedKeys.size() == 0) {
+      throw new IllegalArgumentException("sortedKeys must be non-empty");
+    }
+    if (maxError < 0) {
+      throw new IllegalArgumentException("maxError must be >= 0");
+    }
+    if (radixBits < 0 || radixBits > 20) {
+      throw new IllegalArgumentException("radixBits must be in [0, 20]");
+    }
+
+    long prev = -1L;
+    for (int i = 0; i < sortedKeys.size(); i++) {
+      long key = sortedKeys.keyAt(i);
       if (key < 0) {
         throw new IllegalArgumentException("sortedKeys must contain only non-negative values");
       }

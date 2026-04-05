@@ -55,7 +55,14 @@ final class RadixSplineLookup implements Serializable {
 
   static RadixSplineLookup build(SortedKeyAccessor keyAccessor, int maxError, int radixBits) {
     validateSortedKeys(keyAccessor);
-    return new RadixSplineLookup(keyAccessor, RadixSplineModel.build(toLongArray(keyAccessor), maxError, radixBits));
+    return new RadixSplineLookup(
+        keyAccessor,
+        RadixSplineModel.build(keyAccessor, maxError, radixBits));
+  }
+
+  static RadixSplineLookup fromModel(SortedKeyAccessor keyAccessor, RadixSplineModel model) {
+    validateSortedKeys(keyAccessor);
+    return new RadixSplineLookup(keyAccessor, model);
   }
 
   RadixSplineModel getModel() {
@@ -138,14 +145,6 @@ final class RadixSplineLookup implements Serializable {
 
       prev = key;
     }
-  }
-
-  private static long[] toLongArray(SortedKeyAccessor keys) {
-    long[] result = new long[keys.size()];
-    for (int i = 0; i < keys.size(); i++) {
-      result[i] = keys.keyAt(i);
-    }
-    return result;
   }
 
   @Override

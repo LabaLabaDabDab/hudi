@@ -919,6 +919,12 @@ public class HoodieWriteConfig extends HoodieConfig {
           + " or when using a custom Hoodie Concat Handle Implementation controlled by the config " + CONCAT_HANDLE_CLASS_NAME.key()
               + ", enabling this config results in fallback to the default implementations if instantiation of the custom implementation fails");
 
+  public static final ConfigProperty<String> RADIX_KEEP_TEMP_ARTIFACTS = ConfigProperty
+      .key("hoodie.index.radix.keep.temp.artifacts")
+      .defaultValue("false")
+      .markAdvanced()
+      .withDocumentation("Whether to keep temporary RADIX_SPLINE artifact files on local disk for debugging.");
+
   /**
    * Config key with boolean value that indicates whether record being written during MERGE INTO Spark SQL
    * operation are already prepped.
@@ -1368,6 +1374,10 @@ public class HoodieWriteConfig extends HoodieConfig {
 
   public void setRecordMergerClass(String recordMergerClass) {
     setValue(RECORD_MERGE_IMPL_CLASSES, recordMergerClass);
+  }
+
+  public boolean shouldKeepRadixTempArtifacts() {
+    return getBoolean(RADIX_KEEP_TEMP_ARTIFACTS);
   }
 
   /**
@@ -2036,6 +2046,14 @@ public class HoodieWriteConfig extends HoodieConfig {
 
   public int getRadixSplineIndexRadixBits() {
     return getInt(HoodieIndexConfig.RADIX_SPLINE_INDEX_RADIX_BITS);
+  }
+
+  public int getRadixSplineMaxEntriesPerPartition() {
+    return getInt(HoodieIndexConfig.RADIX_SPLINE_MAX_ENTRIES_PER_PARTITION);
+  }
+
+  public int getRadixSplineMergeMaxEntriesInMemory() {
+    return getInt(HoodieIndexConfig.RADIX_SPLINE_MERGE_MAX_ENTRIES_IN_MEMORY);
   }
 
   public String getBucketIndexPartitionExpression() {
@@ -3229,6 +3247,19 @@ public class HoodieWriteConfig extends HoodieConfig {
 
     public Builder withRadixSplineIndexRadixBits(int radixBits) {
       writeConfig.setValue(HoodieIndexConfig.RADIX_SPLINE_INDEX_RADIX_BITS, String.valueOf(radixBits));
+      return this;
+    }
+
+    public Builder withRadixSplineMaxEntriesPerPartition(int maxEntries) {
+      writeConfig.setValue(
+          HoodieIndexConfig.RADIX_SPLINE_MAX_ENTRIES_PER_PARTITION, String.valueOf(maxEntries));
+      return this;
+    }
+
+    public Builder withRadixSplineMergeMaxEntriesInMemory(int maxEntriesInMemory) {
+      writeConfig.setValue(
+          HoodieIndexConfig.RADIX_SPLINE_MERGE_MAX_ENTRIES_IN_MEMORY,
+          String.valueOf(maxEntriesInMemory));
       return this;
     }
 

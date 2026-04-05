@@ -57,6 +57,23 @@ public class TestRadixSplineLookup {
   }
 
   @Test
+  public void testFromModelUsesProvidedAccessorAndModel() {
+    long[] values = keys(10L, 20L, 30L, 40L);
+    InMemoryKeyAccessor accessor = new InMemoryKeyAccessor(values);
+    RadixSplineModel model = RadixSplineModel.build(values, 2, 4);
+
+    RadixSplineLookup lookup = RadixSplineLookup.fromModel(accessor, model);
+
+    LocationLookupResult found = lookup.lookup(30L);
+    assertTrue(found.isFound());
+    assertEquals(2, found.getPosition());
+
+    LocationLookupResult miss = lookup.lookup(35L);
+    assertFalse(miss.isFound());
+    assertEquals(3, miss.getInsertPosition());
+  }
+
+  @Test
   public void testKeyGreaterThanMaximum() {
     RadixSplineLookup lookup = newLookup(keys(10L, 20L, 30L, 40L, 50L));
 

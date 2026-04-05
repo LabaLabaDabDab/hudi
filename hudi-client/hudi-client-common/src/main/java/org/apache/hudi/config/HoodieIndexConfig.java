@@ -273,6 +273,27 @@ public class HoodieIndexConfig extends HoodieConfig {
       .withDocumentation("Number of radix bits for RADIX_SPLINE index.");
 
   /**
+   * Maximum number of sorted entries per partition when building a RADIX_SPLINE artifact.
+   * Use {@code 0} for unlimited (default). When exceeded, the write fails fast with a clear error instead of OOM.
+   */
+  public static final ConfigProperty<Integer> RADIX_SPLINE_MAX_ENTRIES_PER_PARTITION = ConfigProperty
+      .key("hoodie.index.radix_spline.max_entries_per_partition")
+      .defaultValue(0)
+      .markAdvanced()
+      .withDocumentation("Max entries per partition for RADIX_SPLINE index build; 0 means no limit.");
+
+  /**
+   * In-memory buffer size for external merge sort while building RADIX_SPLINE partition artifacts. Must be {@code > 0}.
+   * Smaller values spill to disk sooner (more I/O, less heap); larger values hold more entries in heap before each spill.
+   */
+  public static final ConfigProperty<Integer> RADIX_SPLINE_MERGE_MAX_ENTRIES_IN_MEMORY = ConfigProperty
+      .key("hoodie.index.radix_spline.merge_max_entries_in_memory")
+      .defaultValue(100_000)
+      .markAdvanced()
+      .withDocumentation(
+          "Max radix entries held in memory per chunk during external merge sort for RADIX_SPLINE build; must be > 0.");
+
+  /**
    * ***** Bucket Index Configs *****
    * Bucket Index is targeted to locate the record fast by hash in big data scenarios.
    * A bucket size is recommended less than 3GB to avoid being too small.
