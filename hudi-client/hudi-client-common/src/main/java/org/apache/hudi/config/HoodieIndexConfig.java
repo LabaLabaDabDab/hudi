@@ -294,6 +294,56 @@ public class HoodieIndexConfig extends HoodieConfig {
           "Max radix entries held in memory per chunk during external merge sort for RADIX_SPLINE build; must be > 0.");
 
   /**
+   * When true, each Spark task logs one INFO line with aggregate timings for RADIX_SPLINE {@code tagLocation}
+   * (encode key, reader acquisition, spline lookup, reading candidate entry). Intended for debugging performance;
+   * disable in production to avoid log volume.
+   */
+  public static final ConfigProperty<Boolean> RADIX_SPLINE_PROFILE_TAG_LOCATION = ConfigProperty
+      .key("hoodie.index.radix_spline.profile_tag_location")
+      .defaultValue(false)
+      .markAdvanced()
+      .withDocumentation(
+          "If true, log per-task timing breakdown for RADIX_SPLINE index tagging (encode, reader get, lookup, entry read).");
+
+  public static final ConfigProperty<Integer> RADIX_SPLINE_LOOKUP_WINDOW_KEYS = ConfigProperty
+      .key("hoodie.index.radix_spline.lookup_window_keys")
+      .defaultValue(4096)
+      .markAdvanced()
+      .withDocumentation("Window size (number of keys) for RADIX_SPLINE key accessor read-ahead during lookup; must be > 0.");
+
+  public static final ConfigProperty<Boolean> RADIX_SPLINE_LOOKUP_WINDOW_ADAPTIVE = ConfigProperty
+      .key("hoodie.index.radix_spline.lookup_window_adaptive")
+      .defaultValue(false)
+      .markAdvanced()
+      .withDocumentation(
+          "When true, after a short calibration phase the RADIX_SPLINE key window may grow or shrink within "
+              + "hoodie.index.radix_spline.lookup_window_adaptive_min / "
+              + "hoodie.index.radix_spline.lookup_window_adaptive_max bounds based on how often the window "
+              + "is reloaded during binary search.");
+
+  public static final ConfigProperty<Integer> RADIX_SPLINE_LOOKUP_WINDOW_ADAPTIVE_MIN = ConfigProperty
+      .key("hoodie.index.radix_spline.lookup_window_adaptive_min")
+      .defaultValue(1024)
+      .markAdvanced()
+      .withDocumentation(
+          "Minimum key window when hoodie.index.radix_spline.lookup_window_adaptive is true; must be > 0.");
+
+  public static final ConfigProperty<Integer> RADIX_SPLINE_LOOKUP_WINDOW_ADAPTIVE_MAX = ConfigProperty
+      .key("hoodie.index.radix_spline.lookup_window_adaptive_max")
+      .defaultValue(16384)
+      .markAdvanced()
+      .withDocumentation(
+          "Maximum key window when hoodie.index.radix_spline.lookup_window_adaptive is true; must be > 0.");
+
+  public static final ConfigProperty<Integer> RADIX_SPLINE_LOOKUP_WINDOW_ADAPTIVE_CALIBRATION_KEYS = ConfigProperty
+      .key("hoodie.index.radix_spline.lookup_window_adaptive_calibration_keys")
+      .defaultValue(4096)
+      .markAdvanced()
+      .withDocumentation(
+          "Number of keyAt samples used to calibrate adaptive window size when "
+              + "hoodie.index.radix_spline.lookup_window_adaptive is true; must be > 0.");
+
+  /**
    * ***** Bucket Index Configs *****
    * Bucket Index is targeted to locate the record fast by hash in big data scenarios.
    * A bucket size is recommended less than 3GB to avoid being too small.

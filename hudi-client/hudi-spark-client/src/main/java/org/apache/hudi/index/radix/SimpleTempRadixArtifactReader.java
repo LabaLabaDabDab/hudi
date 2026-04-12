@@ -26,34 +26,58 @@ import org.apache.hudi.storage.StorageConfiguration;
 import org.apache.hudi.storage.StoragePath;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 
 final class SimpleTempRadixArtifactReader implements TempRadixArtifactReader {
 
   private final SeekableDataInputStream input;
   private final Object streamLock;
   private final int entryCount;
-  private final long entryOffsetsOffset;
+  private final long[] entryOffsets;
   private final long entriesOffset;
   private final RadixSplineLookup lookup;
+  private final int artifactVersion;
+  private final String[] instantTimesById;
+  private final String[] fileIdsById;
 
   private SimpleTempRadixArtifactReader(
       SeekableDataInputStream input,
       Object streamLock,
       int entryCount,
-      long entryOffsetsOffset,
+      long[] entryOffsets,
       long entriesOffset,
-      RadixSplineLookup lookup) {
+      RadixSplineLookup lookup,
+      int artifactVersion,
+      String[] instantTimesById,
+      String[] fileIdsById) {
     this.input = input;
     this.streamLock = streamLock;
     this.entryCount = entryCount;
-    this.entryOffsetsOffset = entryOffsetsOffset;
+    this.entryOffsets = entryOffsets;
     this.entriesOffset = entriesOffset;
     this.lookup = lookup;
+    this.artifactVersion = artifactVersion;
+    this.instantTimesById = instantTimesById;
+    this.fileIdsById = fileIdsById;
   }
 
   static SimpleTempRadixArtifactReader open(
       String artifactUri,
       StorageConfiguration<?> storageConf) throws IOException {
+    return open(artifactUri, storageConf, RadixLookupWindowParams.fixed(4096));
+  }
+
+  static SimpleTempRadixArtifactReader open(
+      String artifactUri,
+      StorageConfiguration<?> storageConf,
+      int lookupWindowKeys) throws IOException {
+    return open(artifactUri, storageConf, RadixLookupWindowParams.fixed(lookupWindowKeys));
+  }
+
+  static SimpleTempRadixArtifactReader open(
+      String artifactUri,
+      StorageConfiguration<?> storageConf,
+      RadixLookupWindowParams lookupWindowParams) throws IOException {
 
     StoragePath path = new StoragePath(artifactUri);
     HoodieStorage storage = HoodieStorageUtils.getStorage(path, storageConf);
@@ -102,16 +126,19 @@ final class SimpleTempRadixArtifactReader implements TempRadixArtifactReader {
       if (magic != SimpleTempRadixArtifactWriter.MAGIC) {
         throw new IOException("Invalid artifact magic: " + magic);
       }
-      if (version != SimpleTempRadixArtifactWriter.VERSION) {
+      if (version != SimpleTempRadixArtifactWriter.VERSION
+          && version != SimpleTempRadixArtifactWriter.UTF8_VERSION
+          && version != SimpleTempRadixArtifactWriter.LEGACY_VERSION) {
         throw new IOException("Unsupported artifact version: " + version);
       }
 
       int entryCount = Math.toIntExact(entryCountLong);
 
-      long[] splineKeys = readLongArray(in, streamLock, splineKeysOffset, splineLen);
-      int[] splinePositions = readIntArray(in, streamLock, splinePositionsOffset, splineLen);
-      int[] radixMinIndex = readIntArray(in, streamLock, radixMinOffset, radixLen);
-      int[] radixMaxIndex = readIntArray(in, streamLock, radixMaxOffset, radixLen);
+      RadixArtifactOpenScratch openScratch = new RadixArtifactOpenScratch();
+      long[] splineKeys = openScratch.readLongArray(in, streamLock, splineKeysOffset, splineLen);
+      int[] splinePositions = openScratch.readIntArray(in, streamLock, splinePositionsOffset, splineLen);
+      int[] radixMinIndex = openScratch.readIntArray(in, streamLock, radixMinOffset, radixLen);
+      int[] radixMaxIndex = openScratch.readIntArray(in, streamLock, radixMaxOffset, radixLen);
 
       RadixSplineModel model = RadixSplineModel.fromSerializedForm(
           entryCount,
@@ -124,17 +151,30 @@ final class SimpleTempRadixArtifactReader implements TempRadixArtifactReader {
           radixMinIndex,
           radixMaxIndex);
 
-      SeekableStreamKeyAccessor keyAccessor =
-          new SeekableStreamKeyAccessor(in, streamLock, keysOffset, entryCount);
+      SeekableWindowedKeyAccessor keyAccessor =
+          new SeekableWindowedKeyAccessor(in, streamLock, keysOffset, entryCount, lookupWindowParams);
       RadixSplineLookup lookup = RadixSplineLookup.fromModel(keyAccessor, model);
+      long[] entryOffsets = openScratch.readLongArray(in, streamLock, entryOffsetsOffset, entryCount);
+      String[] instantTimesById = null;
+      String[] fileIdsById = null;
+      if (version >= 4) {
+        synchronized (streamLock) {
+          in.seek(entriesOffset);
+          instantTimesById = readStringDictionary(in);
+          fileIdsById = readStringDictionary(in);
+        }
+      }
 
       return new SimpleTempRadixArtifactReader(
           in,
           streamLock,
           entryCount,
-          entryOffsetsOffset,
+          entryOffsets,
           entriesOffset,
-          lookup);
+          lookup,
+          version,
+          instantTimesById,
+          fileIdsById);
     } catch (Throwable t) {
       try {
         in.close();
@@ -145,36 +185,6 @@ final class SimpleTempRadixArtifactReader implements TempRadixArtifactReader {
     }
   }
 
-  private static long[] readLongArray(
-      SeekableDataInputStream in,
-      Object streamLock,
-      long offset,
-      int size) throws IOException {
-    long[] result = new long[size];
-    synchronized (streamLock) {
-      in.seek(offset);
-      for (int i = 0; i < size; i++) {
-        result[i] = in.readLong();
-      }
-    }
-    return result;
-  }
-
-  private static int[] readIntArray(
-      SeekableDataInputStream in,
-      Object streamLock,
-      long offset,
-      int size) throws IOException {
-    int[] result = new int[size];
-    synchronized (streamLock) {
-      in.seek(offset);
-      for (int i = 0; i < size; i++) {
-        result[i] = in.readInt();
-      }
-    }
-    return result;
-  }
-
   @Override
   public RadixSplineLookup getLookup() {
     return lookup;
@@ -182,25 +192,109 @@ final class SimpleTempRadixArtifactReader implements TempRadixArtifactReader {
 
   @Override
   public RadixLocationEntry entryAt(int position) throws IOException {
+    return entryAtWithTiming(position, null);
+  }
+
+  RadixLocationEntry entryAtWithTiming(int position, EntryAtTiming timing) throws IOException {
     if (position < 0 || position >= entryCount) {
       throw new IndexOutOfBoundsException(
           "position=" + position + ", entryCount=" + entryCount);
     }
 
-    synchronized (streamLock) {
-      input.seek(entryOffsetsOffset + ((long) position * Long.BYTES));
-      long relativeEntryOffset = input.readLong();
+    long t0 = System.nanoTime();
+    long relativeEntryOffset = entryOffsets[position];
+    long offsetLookupNs = System.nanoTime() - t0;
 
+    synchronized (streamLock) {
+      long t1 = System.nanoTime();
       input.seek(entriesOffset + relativeEntryOffset);
       long encodedKey = input.readLong();
-      String recordKey = input.readUTF();
-      String instantTime = input.readUTF();
-      String fileId = input.readUTF();
+      String recordKey = readRecordKey();
+      String instantTime;
+      String fileId;
+      if (artifactVersion >= 4) {
+        int instantId = input.readInt();
+        int fileIdId = input.readInt();
+        if (instantTimesById == null || fileIdsById == null
+            || instantId < 0 || instantId >= instantTimesById.length
+            || fileIdId < 0 || fileIdId >= fileIdsById.length) {
+          throw new IOException("Invalid dictionary id(s) in radix artifact entry: instantId="
+              + instantId + ", fileIdId=" + fileIdId);
+        }
+        instantTime = instantTimesById[instantId];
+        fileId = fileIdsById[fileIdId];
+      } else {
+        instantTime = readEntryString();
+        fileId = readEntryString();
+      }
+      long payloadReadNs = System.nanoTime() - t1;
+      if (timing != null) {
+        timing.record(offsetLookupNs, payloadReadNs);
+      }
 
       return new RadixLocationEntry(
           encodedKey,
           recordKey,
           new HoodieRecordLocation(instantTime, fileId));
+    }
+  }
+
+  private String readRecordKey() throws IOException {
+    if (artifactVersion == SimpleTempRadixArtifactWriter.LEGACY_VERSION) {
+      return input.readUTF();
+    }
+    return readEntryString();
+  }
+
+  private String readEntryString() throws IOException {
+    int len = input.readInt();
+    if (len < 0) {
+      throw new IOException("Invalid negative string length in radix artifact: " + len);
+    }
+    byte[] bytes = new byte[len];
+    input.readFully(bytes);
+    return new String(bytes, StandardCharsets.UTF_8);
+  }
+
+  private static String[] readStringDictionary(SeekableDataInputStream in) throws IOException {
+    int count = in.readInt();
+    if (count < 0) {
+      throw new IOException("Invalid negative dictionary size in radix artifact: " + count);
+    }
+    String[] values = new String[count];
+    for (int i = 0; i < count; i++) {
+      int len = in.readInt();
+      if (len < 0) {
+        throw new IOException("Invalid negative dictionary string length in radix artifact: " + len);
+      }
+      byte[] bytes = new byte[len];
+      in.readFully(bytes);
+      values[i] = new String(bytes, StandardCharsets.UTF_8);
+    }
+    return values;
+  }
+
+  static final class EntryAtTiming {
+    private long offsetLookupNs;
+    private long payloadReadNs;
+    private long payloadReadCalls;
+
+    void record(long offsetLookupNs, long payloadReadNs) {
+      this.offsetLookupNs += offsetLookupNs;
+      this.payloadReadNs += payloadReadNs;
+      this.payloadReadCalls++;
+    }
+
+    long getOffsetLookupNs() {
+      return offsetLookupNs;
+    }
+
+    long getPayloadReadNs() {
+      return payloadReadNs;
+    }
+
+    long getPayloadReadCalls() {
+      return payloadReadCalls;
     }
   }
 

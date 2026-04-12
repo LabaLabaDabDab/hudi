@@ -30,6 +30,7 @@ import org.apache.hudi.avro.model.HoodieCleanMetadata;
 import org.apache.hudi.avro.model.HoodieMetadataColumnStats;
 import org.apache.hudi.avro.model.HoodieMetadataFileInfo;
 import org.apache.hudi.avro.model.HoodieMetadataRecord;
+import org.apache.hudi.avro.model.HoodieRadixSplineIndexManifest;
 import org.apache.hudi.avro.model.HoodieRecordIndexInfo;
 import org.apache.hudi.avro.model.HoodieRestoreMetadata;
 import org.apache.hudi.avro.model.HoodieRollbackMetadata;
@@ -128,9 +129,13 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nonnull;
 
+import java.io.BufferedInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.Serializable;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.ByteBuffer;
@@ -209,6 +214,15 @@ public class HoodieTableMetadataUtil {
   public static final String PARTITION_NAME_EXPRESSION_INDEX_PREFIX = "expr_index_";
   public static final String PARTITION_NAME_SECONDARY_INDEX = "secondary_index";
   public static final String PARTITION_NAME_SECONDARY_INDEX_PREFIX = "secondary_index_";
+  public static final String PARTITION_NAME_RADIX_SPLINE_INDEX = "radix_spline_index";
+
+  /** Same key as {@code HoodieIndexConfig.INDEX_TYPE} (hudi-client-common); duplicated to avoid a module cycle. */
+  public static final String TABLE_INDEX_TYPE_PROP = "hoodie.index.type";
+
+  /** Same key as {@code HoodieIndexConfig.INDEX_CLASS_NAME}. */
+  public static final String TABLE_INDEX_CLASS_PROP = "hoodie.index.class";
+
+  public static final String RADIX_SPLINE_INDEX_TYPE_NAME = "RADIX_SPLINE";
 
   private static final Set<Schema.Type> SUPPORTED_TYPES_PARTITION_STATS = new HashSet<>(Arrays.asList(
       Schema.Type.INT, Schema.Type.LONG, Schema.Type.FLOAT, Schema.Type.DOUBLE, Schema.Type.STRING, Schema.Type.BOOLEAN, Schema.Type.NULL, Schema.Type.BYTES));
@@ -225,6 +239,20 @@ public class HoodieTableMetadataUtil {
   private static final DeleteContext DELETE_CONTEXT = DeleteContext.fromRecordSchema(CollectionUtils.emptyProps(), HoodieMetadataRecord.getClassSchema());
 
   private HoodieTableMetadataUtil() {
+  }
+
+  /**
+   * Whether {@link HoodieTableConfig} (hoodie.properties) indicates the data table uses the radix spline record index.
+   * Used to avoid maintaining the {@code radix_spline_index} MDT partition (and per-commit manifest work) for
+   * tables that use another index type.
+   */
+  public static boolean tableConfigIndicatesRadixSplineIndex(HoodieTableConfig tableConfig) {
+    String t = tableConfig.getProps().getProperty(TABLE_INDEX_TYPE_PROP, "");
+    if (!isNullOrEmpty(t)) {
+      return RADIX_SPLINE_INDEX_TYPE_NAME.equalsIgnoreCase(t.trim());
+    }
+    String cls = tableConfig.getProps().getProperty(TABLE_INDEX_CLASS_PROP, "");
+    return !isNullOrEmpty(cls) && cls.contains("HoodieRadixSplineIndex");
   }
 
   public static final Set<Class<?>> COLUMN_STATS_RECORD_SUPPORTED_TYPES = new HashSet<>(Arrays.asList(
@@ -3082,6 +3110,136 @@ public class HoodieTableMetadataUtil {
         .withVersion(indexVersion)
         .build();
     metaClient.buildIndexDefinition(indexDefinition);
+  }
+
+  /**
+   * Record key for {@link MetadataPartitionType#RADIX_SPLINE_INDEX} (matches {@code latest/*.properties} file stem).
+   */
+  public static String getRadixSplineManifestRecordKey(String partitionPath) {
+    if (partitionPath == null || partitionPath.isEmpty()) {
+      return "__root__";
+    }
+    return Base64.getUrlEncoder().withoutPadding().encodeToString(partitionPath.getBytes(StandardCharsets.UTF_8));
+  }
+
+  public static Option<HoodieRadixSplineIndexManifest> readRadixSplineManifest(
+      org.apache.hudi.storage.HoodieStorage storage, org.apache.hudi.storage.StoragePath manifestPath) {
+    try {
+      if (!storage.exists(manifestPath)) {
+        return Option.empty();
+      }
+    } catch (IOException e) {
+      LOG.debug("Radix manifest existence check failed for {}", manifestPath, e);
+      return Option.empty();
+    }
+    Properties props = new Properties();
+    try (InputStream in = new BufferedInputStream(storage.open(manifestPath))) {
+      props.load(in);
+    } catch (FileNotFoundException e) {
+      return Option.empty();
+    } catch (IOException e) {
+      LOG.info("Failed reading radix spline manifest at {}", manifestPath, e);
+      return Option.empty();
+    }
+    return propertiesToRadixSplineManifest(props);
+  }
+
+  public static Option<HoodieRadixSplineIndexManifest> propertiesToRadixSplineManifest(Properties props) {
+    String partitionPath = props.getProperty("partitionPath");
+    String baseInstant = props.getProperty("baseInstant");
+    String artifactPath = props.getProperty("artifactPath");
+    String entryCount = props.getProperty("entryCount");
+    String minKey = props.getProperty("minKey");
+    String maxKey = props.getProperty("maxKey");
+    String partitionFingerprint = props.getProperty("partitionFingerprint");
+    String fileCount = props.getProperty("fileCount");
+    if (partitionPath == null
+        || baseInstant == null
+        || artifactPath == null
+        || entryCount == null
+        || minKey == null
+        || maxKey == null
+        || partitionFingerprint == null
+        || fileCount == null) {
+      return Option.empty();
+    }
+    try {
+      return Option.of(
+          HoodieRadixSplineIndexManifest.newBuilder()
+              .setPartitionPath(partitionPath)
+              .setArtifactPath(artifactPath)
+              .setEntryCount(Long.parseLong(entryCount))
+              .setMinKey(Long.parseLong(minKey))
+              .setMaxKey(Long.parseLong(maxKey))
+              .setBaseInstant(baseInstant)
+              .setPartitionFingerprint(partitionFingerprint)
+              .setFileCount(Integer.parseInt(fileCount))
+              .setIsDeleted(false)
+              .build());
+    } catch (NumberFormatException nfe) {
+      return Option.empty();
+    }
+  }
+
+  public static List<HoodieRecord<HoodieMetadataPayload>> loadAllRadixSplineManifestRecordsForBootstrap(
+      HoodieTableMetaClient metaClient) throws IOException {
+    org.apache.hudi.storage.StoragePath latest =
+        new org.apache.hudi.storage.StoragePath(metaClient.getBasePath(), ".hoodie/.radix_index_tmp/latest");
+    List<HoodieRecord<HoodieMetadataPayload>> out = new ArrayList<>();
+    if (!metaClient.getStorage().exists(latest)) {
+      return out;
+    }
+    List<org.apache.hudi.storage.StoragePathInfo> entries = metaClient.getStorage().listDirectEntries(latest);
+    for (org.apache.hudi.storage.StoragePathInfo e : entries) {
+      if (e.isDirectory()) {
+        continue;
+      }
+      String name = e.getPath().getName();
+      if (!name.endsWith(".properties")) {
+        continue;
+      }
+      String recordKey = name.substring(0, name.length() - ".properties".length());
+      Option<HoodieRadixSplineIndexManifest> man = readRadixSplineManifest(metaClient.getStorage(), e.getPath());
+      if (man.isPresent()) {
+        out.add(HoodieMetadataPayload.createRadixSplineManifestRecord(recordKey, man.get()));
+      }
+    }
+    return out;
+  }
+
+  @SuppressWarnings("unchecked")
+  public static HoodieData<HoodieRecord> convertCommitToRadixSplineManifestRecords(
+      HoodieEngineContext engineContext, HoodieTableMetaClient metaClient, HoodieCommitMetadata commitMetadata) {
+    Set<String> partitions = commitMetadata.getPartitionToWriteStats().keySet();
+    if (partitions.isEmpty()) {
+      return engineContext.emptyHoodieData();
+    }
+    org.apache.hudi.storage.HoodieStorage storage = metaClient.getStorage();
+    org.apache.hudi.storage.StoragePath base = metaClient.getBasePath();
+    org.apache.hudi.storage.StoragePath latestDir =
+        new org.apache.hudi.storage.StoragePath(base, ".hoodie/.radix_index_tmp/latest");
+    try {
+      if (!storage.exists(latestDir)) {
+        return engineContext.emptyHoodieData();
+      }
+    } catch (IOException e) {
+      LOG.debug("Radix latest manifest directory check failed for {}", latestDir, e);
+      return engineContext.emptyHoodieData();
+    }
+    List<HoodieRecord<HoodieMetadataPayload>> records = new ArrayList<>();
+    for (String partitionPath : partitions) {
+      String recordKey = getRadixSplineManifestRecordKey(partitionPath);
+      org.apache.hudi.storage.StoragePath manifestPath =
+          new org.apache.hudi.storage.StoragePath(
+              new org.apache.hudi.storage.StoragePath(base, ".hoodie/.radix_index_tmp/latest"),
+              recordKey + ".properties");
+      readRadixSplineManifest(storage, manifestPath)
+          .ifPresent(m -> records.add(HoodieMetadataPayload.createRadixSplineManifestRecord(recordKey, m)));
+    }
+    if (records.isEmpty()) {
+      return engineContext.emptyHoodieData();
+    }
+    return (HoodieData<HoodieRecord>) (HoodieData<?>) engineContext.parallelize(records, Math.max(1, records.size()));
   }
 
   /**

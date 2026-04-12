@@ -2056,6 +2056,30 @@ public class HoodieWriteConfig extends HoodieConfig {
     return getInt(HoodieIndexConfig.RADIX_SPLINE_MERGE_MAX_ENTRIES_IN_MEMORY);
   }
 
+  public boolean getRadixSplineProfileTagLocation() {
+    return getBoolean(HoodieIndexConfig.RADIX_SPLINE_PROFILE_TAG_LOCATION);
+  }
+
+  public int getRadixSplineLookupWindowKeys() {
+    return getInt(HoodieIndexConfig.RADIX_SPLINE_LOOKUP_WINDOW_KEYS);
+  }
+
+  public boolean getRadixSplineLookupWindowAdaptive() {
+    return getBoolean(HoodieIndexConfig.RADIX_SPLINE_LOOKUP_WINDOW_ADAPTIVE);
+  }
+
+  public int getRadixSplineLookupWindowAdaptiveMin() {
+    return getInt(HoodieIndexConfig.RADIX_SPLINE_LOOKUP_WINDOW_ADAPTIVE_MIN);
+  }
+
+  public int getRadixSplineLookupWindowAdaptiveMax() {
+    return getInt(HoodieIndexConfig.RADIX_SPLINE_LOOKUP_WINDOW_ADAPTIVE_MAX);
+  }
+
+  public int getRadixSplineLookupWindowAdaptiveCalibrationKeys() {
+    return getInt(HoodieIndexConfig.RADIX_SPLINE_LOOKUP_WINDOW_ADAPTIVE_CALIBRATION_KEYS);
+  }
+
   public String getBucketIndexPartitionExpression() {
     return getString(HoodieIndexConfig.BUCKET_INDEX_PARTITION_EXPRESSIONS);
   }
@@ -3260,6 +3284,12 @@ public class HoodieWriteConfig extends HoodieConfig {
       writeConfig.setValue(
           HoodieIndexConfig.RADIX_SPLINE_MERGE_MAX_ENTRIES_IN_MEMORY,
           String.valueOf(maxEntriesInMemory));
+      return this;
+    }
+
+    public Builder withRadixSplineProfileTagLocation(boolean profileTagLocation) {
+      writeConfig.setValue(
+          HoodieIndexConfig.RADIX_SPLINE_PROFILE_TAG_LOCATION, String.valueOf(profileTagLocation));
       return this;
     }
 

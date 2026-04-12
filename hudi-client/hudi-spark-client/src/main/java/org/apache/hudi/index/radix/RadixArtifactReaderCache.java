@@ -36,28 +36,53 @@ final class RadixArtifactReaderCache {
 
   private static final ConcurrentHashMap<String, ReaderHolder> CACHE = new ConcurrentHashMap<>();
 
+  /** Separates artifact URI from window-params suffix inside {@link #cacheMapKey}. */
+  private static final char CACHE_KEY_SEP = '\u0000';
+
   private RadixArtifactReaderCache() {
   }
 
   static TempRadixArtifactReader getOrOpen(
       PartitionLookupDescriptor descriptor,
-      StorageConfiguration<?> storageConf) {
+      StorageConfiguration<?> storageConf,
+      RadixLookupWindowParams lookupWindowParams) {
     String artifactPath = descriptor.getArtifactPath();
+    String mapKey = cacheMapKey(artifactPath, lookupWindowParams);
 
-    ReaderHolder holder = CACHE.computeIfAbsent(artifactPath, key -> {
+    ReaderHolder holder = CACHE.computeIfAbsent(mapKey, key -> {
       LOG.info(
-          "RADIX reader cache create holder: partition={}, artifact={}",
+          "RADIX reader cache create holder: partition={}, artifact={}, window={}",
           descriptor.getPartitionPath(),
-          artifactPath);
-      return new ReaderHolder(descriptor);
+          artifactPath,
+          lookupWindowParams.cacheKeySuffix());
+      return new ReaderHolder(descriptor, lookupWindowParams, mapKey);
     });
 
     return holder.getOrOpen(storageConf);
   }
 
+  static TempRadixArtifactReader getOrOpen(
+      PartitionLookupDescriptor descriptor,
+      StorageConfiguration<?> storageConf,
+      int lookupWindowKeys) {
+    return getOrOpen(descriptor, storageConf, RadixLookupWindowParams.fixed(lookupWindowKeys));
+  }
+
+  static TempRadixArtifactReader getOrOpen(
+      PartitionLookupDescriptor descriptor,
+      StorageConfiguration<?> storageConf) {
+    return getOrOpen(descriptor, storageConf, RadixLookupWindowParams.fixed(4096));
+  }
+
   static void evict(String artifactPath) {
-    ReaderHolder holder = CACHE.remove(artifactPath);
-    if (holder != null) {
+    Iterator<Map.Entry<String, ReaderHolder>> it = CACHE.entrySet().iterator();
+    while (it.hasNext()) {
+      Map.Entry<String, ReaderHolder> entry = it.next();
+      if (!artifactPathFromCacheMapKey(entry.getKey()).equals(artifactPath)) {
+        continue;
+      }
+      ReaderHolder holder = entry.getValue();
+      it.remove();
       holder.closeQuietly();
       LOG.info("RADIX reader cache evicted: artifact={}", artifactPath);
     }
@@ -75,7 +100,7 @@ final class RadixArtifactReaderCache {
     Iterator<Map.Entry<String, ReaderHolder>> it = CACHE.entrySet().iterator();
     while (it.hasNext()) {
       Map.Entry<String, ReaderHolder> entry = it.next();
-      String artifactKey = entry.getKey();
+      String artifactKey = artifactPathFromCacheMapKey(entry.getKey());
       if (!artifactKey.contains(needle)) {
         continue;
       }
@@ -113,7 +138,7 @@ final class RadixArtifactReaderCache {
     Iterator<Map.Entry<String, ReaderHolder>> it = CACHE.entrySet().iterator();
     while (it.hasNext()) {
       Map.Entry<String, ReaderHolder> entry = it.next();
-      String artifactKey = entry.getKey();
+      String artifactKey = artifactPathFromCacheMapKey(entry.getKey());
       if (artifactUnderRadixStaging(artifactKey, radixPathPrefix)) {
         ReaderHolder holder = entry.getValue();
         String partitionPath = holder.getPartitionPath();
@@ -132,6 +157,15 @@ final class RadixArtifactReaderCache {
    */
   static int cacheSizeForTesting() {
     return CACHE.size();
+  }
+
+  private static String cacheMapKey(String artifactPath, RadixLookupWindowParams params) {
+    return artifactPath + CACHE_KEY_SEP + params.cacheKeySuffix();
+  }
+
+  private static String artifactPathFromCacheMapKey(String mapKey) {
+    int sep = mapKey.indexOf(CACHE_KEY_SEP);
+    return sep < 0 ? mapKey : mapKey.substring(0, sep);
   }
 
   private static boolean artifactUnderRadixStaging(String artifactUri, String radixPathPrefix) {
@@ -193,13 +227,20 @@ final class RadixArtifactReaderCache {
 
   private static final class ReaderHolder {
     private final PartitionLookupDescriptor descriptor;
+    private final RadixLookupWindowParams lookupWindowParams;
+    private final String mapKey;
 
     private volatile TempRadixArtifactReader reader;
     private volatile RuntimeException openFailure;
     private volatile long lastAccessTimeMs;
 
-    private ReaderHolder(PartitionLookupDescriptor descriptor) {
+    private ReaderHolder(
+        PartitionLookupDescriptor descriptor,
+        RadixLookupWindowParams lookupWindowParams,
+        String mapKey) {
       this.descriptor = descriptor;
+      this.lookupWindowParams = lookupWindowParams;
+      this.mapKey = mapKey;
       this.lastAccessTimeMs = System.currentTimeMillis();
     }
 
@@ -229,7 +270,8 @@ final class RadixArtifactReaderCache {
 
         try {
           TempRadixArtifactReader opened =
-              SimpleTempRadixArtifactReader.open(descriptor.getArtifactPath(), storageConf);
+              SimpleTempRadixArtifactReader.open(
+                  descriptor.getArtifactPath(), storageConf, lookupWindowParams);
 
           reader = opened;
           lastAccessTimeMs = System.currentTimeMillis();
@@ -248,7 +290,7 @@ final class RadixArtifactReaderCache {
                   + ", artifact=" + descriptor.getArtifactPath(),
               ioe);
           openFailure = failure;
-          CACHE.remove(descriptor.getArtifactPath(), this);
+          CACHE.remove(mapKey, this);
           throw failure;
         }
       }

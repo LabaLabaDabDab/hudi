@@ -88,6 +88,35 @@ final class RadixSplineLookup implements Serializable {
     return LocationLookupResult.notFound(pos, bound);
   }
 
+  LocationLookupResult lookupWithTiming(long key, LookupTiming timing) {
+    Objects.requireNonNull(timing, "timing must not be null");
+    if (key < 0) {
+      throw new IllegalArgumentException("key must be >= 0");
+    }
+
+    SearchBound bound = model.getSearchBound(key);
+    int width = bound.getHi() - bound.getLo();
+    if (width <= 0) {
+      timing.recordBoundWidth(0);
+      timing.recordBucket(false, true);
+      return LocationLookupResult.notFound(bound.getLo(), bound);
+    }
+
+    timing.recordBoundWidth(width);
+    int pos = lowerBoundWithTiming(keyAccessor, key, bound.getLo(), bound.getHi(), timing);
+
+    if (pos < keyAccessor.size()) {
+      timing.recordKeyAtCall();
+      if (keyAccessor.keyAt(pos) == key) {
+        timing.recordBucket(true, false);
+        return LocationLookupResult.found(pos, bound);
+      }
+    }
+
+    timing.recordBucket(false, false);
+    return LocationLookupResult.notFound(pos, bound);
+  }
+
   static int lowerBound(SortedKeyAccessor keys, long key, int fromIndex, int toIndex) {
     Objects.requireNonNull(keys, "keys must not be null");
 
@@ -119,6 +148,95 @@ final class RadixSplineLookup implements Serializable {
   static int lowerBound(long[] keys, long key, int fromIndex, int toIndex) {
     Objects.requireNonNull(keys, "keys must not be null");
     return lowerBound(new InMemoryKeyAccessor(keys), key, fromIndex, toIndex);
+  }
+
+  private static int lowerBoundWithTiming(
+      SortedKeyAccessor keys,
+      long key,
+      int fromIndex,
+      int toIndex,
+      LookupTiming timing) {
+    Objects.requireNonNull(keys, "keys must not be null");
+    Objects.requireNonNull(timing, "timing must not be null");
+
+    if (fromIndex < 0) {
+      throw new IllegalArgumentException("fromIndex must be >= 0");
+    }
+    if (toIndex < fromIndex) {
+      throw new IllegalArgumentException("toIndex must be >= fromIndex");
+    }
+    if (toIndex > keys.size()) {
+      throw new IllegalArgumentException("toIndex must be <= keys.size()");
+    }
+
+    int lo = fromIndex;
+    int hi = toIndex;
+    while (lo < hi) {
+      int mid = lo + ((hi - lo) >>> 1);
+      timing.recordKeyAtCall();
+      if (keys.keyAt(mid) < key) {
+        lo = mid + 1;
+      } else {
+        hi = mid;
+      }
+    }
+    return lo;
+  }
+
+  static final class LookupTiming {
+    private long keyAtCalls;
+    private long boundWidthTotal;
+    private long bucketHits;
+    private long bucketMisses;
+    private long emptyBuckets;
+
+    void reset() {
+      keyAtCalls = 0L;
+      boundWidthTotal = 0L;
+      bucketHits = 0L;
+      bucketMisses = 0L;
+      emptyBuckets = 0L;
+    }
+
+    void recordKeyAtCall() {
+      keyAtCalls++;
+    }
+
+    void recordBoundWidth(int width) {
+      if (width > 0) {
+        boundWidthTotal += width;
+      }
+    }
+
+    void recordBucket(boolean found, boolean empty) {
+      if (empty) {
+        emptyBuckets++;
+      } else if (found) {
+        bucketHits++;
+      } else {
+        bucketMisses++;
+      }
+    }
+
+    long getKeyAtCalls() {
+      return keyAtCalls;
+    }
+
+    long getBoundWidthTotal() {
+      return boundWidthTotal;
+    }
+
+    long getBucketHits() {
+      return bucketHits;
+    }
+
+    long getBucketMisses() {
+      return bucketMisses;
+    }
+
+    long getEmptyBuckets() {
+      return emptyBuckets;
+    }
   }
 
   private static void validateSortedKeys(SortedKeyAccessor keys) {

@@ -19,6 +19,7 @@
 package org.apache.hudi.metadata;
 
 import org.apache.hudi.avro.model.HoodieMetadataColumnStats;
+import org.apache.hudi.avro.model.HoodieRadixSplineIndexManifest;
 import org.apache.hudi.common.bloom.BloomFilter;
 import org.apache.hudi.common.data.HoodieData;
 import org.apache.hudi.common.data.HoodiePairData;
@@ -203,6 +204,13 @@ public interface HoodieTableMetadata extends Serializable, AutoCloseable {
    */
   Map<Pair<String, String>, BloomFilter> getBloomFilters(final List<Pair<String, String>> partitionNameFileNameList, final String metadataPartitionName)
       throws HoodieMetadataException;
+
+  /**
+   * RADIX_SPLINE manifest pointer for a data partition (MDT key = sanitized partition id, same as {@code latest/*.properties} stem).
+   */
+  default Option<HoodieRadixSplineIndexManifest> getRadixSplineIndexManifest(String recordKey) {
+    return Option.empty();
+  }
 
   /**
    * Get column stats for files from the metadata table index.

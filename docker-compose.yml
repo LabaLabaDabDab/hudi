@@ -36,6 +36,7 @@ services:
       HDFS_REPLICATION: 1
     ports:
       - "9864:9864"
+      - "9866:9866"
     volumes:
       - datanode-data:/data/dfs/data
     command: ["/opt/scripts/run-datanode.sh"]
@@ -114,7 +115,6 @@ services:
       SPARK_MASTER_HOST: spark-master
       SPARK_MASTER_PORT: 7077
       MAVEN_OPTS: "-Xmx4g"
-      # baseline_benchmark.py and other tools: use Docker DNS name `namenode` (not localhost).
       HUDI_BASE_ROOT: hdfs://namenode:9000/user/hudi/trips_cow
     volumes:
       - .:/workspace/hudi

@@ -20,6 +20,7 @@ package org.apache.hudi.index.radix;
 
 import org.apache.avro.LogicalType;
 import org.apache.avro.Schema;
+import org.apache.hudi.avro.model.HoodieRadixSplineIndexManifest;
 import org.apache.hudi.client.WriteStatus;
 import org.apache.hudi.common.data.HoodieData;
 import org.apache.hudi.common.engine.HoodieEngineContext;
@@ -35,6 +36,7 @@ import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.exception.HoodieIOException;
 import org.apache.hudi.hadoop.fs.HadoopFSUtils;
 import org.apache.hudi.index.HoodieIndex;
+import org.apache.hudi.metadata.MetadataPartitionType;
 import org.apache.hudi.io.HoodieKeyLocationFetchHandle;
 import org.apache.hudi.keygen.constant.KeyGeneratorOptions;
 import org.apache.hudi.storage.HoodieStorage;
@@ -46,6 +48,7 @@ import org.apache.hudi.storage.hadoop.HadoopStorageConfiguration;
 import org.apache.hudi.table.HoodieTable;
 import org.apache.hadoop.conf.Configuration;
 
+import org.apache.spark.TaskContext;
 import org.apache.spark.sql.SparkSession;
 
 import org.slf4j.Logger;
@@ -92,8 +95,16 @@ public class HoodieRadixSplineIndex extends HoodieIndex<Object, Object> {
 
   private static final Logger LOG = LoggerFactory.getLogger(HoodieRadixSplineIndex.class);
 
+  /**
+   * Initial capacity for per-task tagLocation output list (Spark partition size varies; this reduces
+   * ArrayList growth rounds for typical micro-batches without large overhead for tiny partitions).
+   */
+  private static final int TAG_LOCATION_OUTPUT_INITIAL_CAPACITY = 1024;
+
   private final int maxError;
   private final int radixBits;
+  private final boolean profileTagLocation;
+  private final RadixLookupWindowParams radixLookupWindowParams;
 
   private volatile RadixSplineKeyEncoder keyEncoder;
   private volatile String recordKeyField;
@@ -104,7 +115,26 @@ public class HoodieRadixSplineIndex extends HoodieIndex<Object, Object> {
     Objects.requireNonNull(config, "config must not be null");
     this.maxError = config.getRadixSplineIndexMaxError();
     this.radixBits = config.getRadixSplineIndexRadixBits();
+    this.profileTagLocation = config.getRadixSplineProfileTagLocation();
+    int initialWin = config.getRadixSplineLookupWindowKeys();
+    if (config.getRadixSplineLookupWindowAdaptive()) {
+      this.radixLookupWindowParams =
+          new RadixLookupWindowParams(
+              initialWin,
+              true,
+              config.getRadixSplineLookupWindowAdaptiveMin(),
+              config.getRadixSplineLookupWindowAdaptiveMax(),
+              config.getRadixSplineLookupWindowAdaptiveCalibrationKeys());
+    } else {
+      this.radixLookupWindowParams = RadixLookupWindowParams.fixed(initialWin);
+    }
+  }
 
+  private static int hashMapCapacityForExpectedSize(int expectedSize) {
+    if (expectedSize <= 0) {
+      return 16;
+    }
+    return Math.max(16, (int) (expectedSize / 0.75f) + 1);
   }
 
   private static final class PartitionBaseFileState {
@@ -172,41 +202,133 @@ public class HoodieRadixSplineIndex extends HoodieIndex<Object, Object> {
         runtimeByPartition.size(),
         (System.nanoTime() - started) / 1_000_000L);
 
+    final boolean profileTagLocation = this.profileTagLocation;
+    final int readerMapCapacity = hashMapCapacityForExpectedSize(runtimeByPartition.size());
     HoodieData<HoodieRecord<R>> tagged = records.mapPartitions(recordIterator -> {
-      List<HoodieRecord<R>> output = new ArrayList<>();
+      List<HoodieRecord<R>> output = new ArrayList<>(TAG_LOCATION_OUTPUT_INITIAL_CAPACITY);
+
+      TaskContext tc = TaskContext.get();
+      final int sparkPartitionId = tc != null ? tc.partitionId() : -1;
+      final long taskAttemptId = tc != null ? tc.taskAttemptId() : -1L;
+
+      long recordsTotal = 0L;
+      long recordsNoRuntime = 0L;
+      long recordsIndexed = 0L;
+      long encodeNs = 0L;
+      long readerGetNs = 0L;
+      long readerGetCalls = 0L;
+      long lookupNs = 0L;
+      long lookupCalls = 0L;
+      long lookupKeyAtCalls = 0L;
+      long lookupBoundWidthTotal = 0L;
+      long lookupBucketHits = 0L;
+      long lookupBucketMisses = 0L;
+      long lookupEmptyBuckets = 0L;
+      long entryReadNs = 0L;
+      long entryReadCalls = 0L;
+      long entryOffsetLookupNs = 0L;
+      long entryPayloadReadNs = 0L;
+      long entryPayloadReadCalls = 0L;
+      long notFound = 0L;
+      long badPosition = 0L;
+      long keyMismatch = 0L;
+      long taggedOk = 0L;
+
+      // One reader per Hudi partition per Spark task — avoids repeated RadixArtifactReaderCache lookups
+      // and synchronized paths on every row (global cache still opens underlying streams once).
+      Map<String, TempRadixArtifactReader> readerByPartitionPath = new HashMap<>(readerMapCapacity);
+      final RadixSplineLookup.LookupTiming lookupTiming =
+          profileTagLocation ? new RadixSplineLookup.LookupTiming() : null;
 
       try {
         while (recordIterator.hasNext()) {
           HoodieRecord<R> record = recordIterator.next();
-          PartitionLookupRuntime runtime = runtimeByPartition.get(record.getPartitionPath());
+          recordsTotal++;
+          String partitionPath = record.getPartitionPath();
+          PartitionLookupRuntime runtime = runtimeByPartition.get(partitionPath);
           if (runtime == null) {
+            recordsNoRuntime++;
             output.add(record);
             continue;
           }
 
+          recordsIndexed++;
           String recordKey = record.getRecordKey();
-          long encodedKey = encodeRecordKeyOrThrow(
-              recordKey,
-              record.getPartitionPath(),
-              "tagLocation");
+          final long encodedKey;
+          if (profileTagLocation) {
+            long t0 = System.nanoTime();
+            encodedKey = encodeRecordKeyOrThrow(
+                recordKey,
+                partitionPath,
+                "tagLocation");
+            encodeNs += System.nanoTime() - t0;
+          } else {
+            encodedKey = encodeRecordKeyOrThrow(
+                recordKey,
+                partitionPath,
+                "tagLocation");
+          }
 
-          TempRadixArtifactReader reader = runtime.reader(storageConf);
+          TempRadixArtifactReader reader = readerByPartitionPath.get(partitionPath);
+          if (reader == null) {
+            if (profileTagLocation) {
+              long t0 = System.nanoTime();
+              reader = runtime.reader(storageConf);
+              readerGetNs += System.nanoTime() - t0;
+              readerGetCalls++;
+            } else {
+              reader = runtime.reader(storageConf);
+            }
+            readerByPartitionPath.put(partitionPath, reader);
+          }
 
-          LocationLookupResult result = reader.getLookup().lookup(encodedKey);
+          LocationLookupResult result;
+          if (profileTagLocation) {
+            long t0 = System.nanoTime();
+            lookupTiming.reset();
+            result = reader.getLookup().lookupWithTiming(encodedKey, lookupTiming);
+            lookupNs += System.nanoTime() - t0;
+            lookupCalls++;
+            lookupKeyAtCalls += lookupTiming.getKeyAtCalls();
+            lookupBoundWidthTotal += lookupTiming.getBoundWidthTotal();
+            lookupBucketHits += lookupTiming.getBucketHits();
+            lookupBucketMisses += lookupTiming.getBucketMisses();
+            lookupEmptyBuckets += lookupTiming.getEmptyBuckets();
+          } else {
+            result = reader.getLookup().lookup(encodedKey);
+          }
           if (!result.isFound()) {
+            notFound++;
             output.add(record);
             continue;
           }
 
           int position = result.getPosition();
           if (position < 0 || position >= reader.size()) {
+            badPosition++;
             output.add(record);
             continue;
           }
 
           RadixLocationEntry candidate;
           try {
-            candidate = reader.entryAt(position);
+            if (profileTagLocation) {
+              long t0 = System.nanoTime();
+              if (reader instanceof SimpleTempRadixArtifactReader) {
+                SimpleTempRadixArtifactReader.EntryAtTiming timing =
+                    new SimpleTempRadixArtifactReader.EntryAtTiming();
+                candidate = ((SimpleTempRadixArtifactReader) reader).entryAtWithTiming(position, timing);
+                entryOffsetLookupNs += timing.getOffsetLookupNs();
+                entryPayloadReadNs += timing.getPayloadReadNs();
+                entryPayloadReadCalls += timing.getPayloadReadCalls();
+              } else {
+                candidate = reader.entryAt(position);
+              }
+              entryReadNs += System.nanoTime() - t0;
+              entryReadCalls++;
+            } else {
+              candidate = reader.entryAt(position);
+            }
           } catch (IOException ioe) {
             throw new RuntimeException(
                 "Failed to read radix artifact entry for partition="
@@ -216,6 +338,7 @@ public class HoodieRadixSplineIndex extends HoodieIndex<Object, Object> {
           }
 
           if (!recordKey.equals(candidate.getRecordKey())) {
+            keyMismatch++;
             output.add(record);
             continue;
           }
@@ -223,7 +346,43 @@ public class HoodieRadixSplineIndex extends HoodieIndex<Object, Object> {
           record.unseal();
           record.setCurrentLocation(candidate.getLocation());
           record.seal();
+          taggedOk++;
           output.add(record);
+        }
+
+        if (profileTagLocation && recordsTotal > 0) {
+          LOG.info(
+              "RADIX tagLocation task profile: sparkPartitionId={}, taskAttemptId={}, recordsTotal={}, "
+                  + "noRuntime={}, indexed={}, taggedOk={}, notFound={}, badPosition={}, keyMismatch={}, "
+                  + "encodeMs={}, readerGetMs={} (calls={}), lookupMs={} (calls={}), "
+                  + "lookupKeyAtCalls={}, lookupAvgKeyAtPerLookup={}, "
+                  + "lookupAvgBoundWidth={}, lookupBucketHitRatio={}, lookupBucketMissRatio={}, lookupEmptyBucketRatio={}, "
+                  + "entryReadMs={} (calls={}), entryOffsetLookupMs={}, entryPayloadReadMs={} (calls={})",
+              sparkPartitionId,
+              taskAttemptId,
+              recordsTotal,
+              recordsNoRuntime,
+              recordsIndexed,
+              taggedOk,
+              notFound,
+              badPosition,
+              keyMismatch,
+              encodeNs / 1_000_000L,
+              readerGetNs / 1_000_000L,
+              readerGetCalls,
+              lookupNs / 1_000_000L,
+              lookupCalls,
+              lookupKeyAtCalls,
+              lookupCalls > 0 ? ((double) lookupKeyAtCalls) / lookupCalls : 0.0d,
+              lookupCalls > 0 ? ((double) lookupBoundWidthTotal) / lookupCalls : 0.0d,
+              lookupCalls > 0 ? ((double) lookupBucketHits) / lookupCalls : 0.0d,
+              lookupCalls > 0 ? ((double) lookupBucketMisses) / lookupCalls : 0.0d,
+              lookupCalls > 0 ? ((double) lookupEmptyBuckets) / lookupCalls : 0.0d,
+              entryReadNs / 1_000_000L,
+              entryReadCalls,
+              entryOffsetLookupNs / 1_000_000L,
+              entryPayloadReadNs / 1_000_000L,
+              entryPayloadReadCalls);
         }
 
         return output.iterator();
@@ -445,12 +604,100 @@ public class HoodieRadixSplineIndex extends HoodieIndex<Object, Object> {
     return fingerprint.substring(0, 12);
   }
 
+  private PartitionLookupDescriptor buildDescriptorFromManifestFields(
+      String partitionPath,
+      HoodieRadixSplineIndexManifest m,
+      PartitionBaseFileState expectedState,
+      HoodieStorage storage) {
+    if (!partitionPath.equals(m.getPartitionPath())) {
+      LOG.info(
+          "RADIX manifest partitionPath mismatch: expected={}, manifest={}",
+          partitionPath,
+          m.getPartitionPath());
+      return null;
+    }
+    if (!expectedState.getLatestBaseInstant().equals(m.getBaseInstant())) {
+      LOG.info(
+          "RADIX manifest baseInstant mismatch: partition={}, expected={}, actual={}",
+          partitionPath,
+          expectedState.getLatestBaseInstant(),
+          m.getBaseInstant());
+      return null;
+    }
+    if (!expectedState.getPartitionFingerprint().equals(m.getPartitionFingerprint())) {
+      LOG.info(
+          "RADIX manifest fingerprint mismatch: partition={}, expected={}, actual={}",
+          partitionPath,
+          shortFingerprint(expectedState.getPartitionFingerprint()),
+          shortFingerprint(m.getPartitionFingerprint()));
+      return null;
+    }
+    if (m.getFileCount() != expectedState.getFileCount()) {
+      LOG.info(
+          "RADIX manifest fileCount mismatch: partition={}, expected={}, actual={}",
+          partitionPath,
+          expectedState.getFileCount(),
+          m.getFileCount());
+      return null;
+    }
+    StoragePath artifact;
+    try {
+      artifact = new StoragePath(m.getArtifactPath());
+    } catch (Exception e) {
+      LOG.info(
+          "RADIX artifact path invalid: partition={}, artifactPath={}",
+          partitionPath,
+          m.getArtifactPath(),
+          e);
+      return null;
+    }
+    try {
+      if (!storage.exists(artifact)) {
+        LOG.info(
+            "RADIX artifact missing: partition={}, artifactPath={}",
+            partitionPath,
+            m.getArtifactPath());
+        return null;
+      }
+    } catch (IOException e) {
+      LOG.info(
+          "RADIX artifact existence check failed: partition={}, artifactPath={}",
+          partitionPath,
+          m.getArtifactPath(),
+          e);
+      return null;
+    }
+    return new PartitionLookupDescriptor(
+        partitionPath,
+        m.getArtifactPath(),
+        m.getEntryCount(),
+        m.getMinKey(),
+        m.getMaxKey(),
+        m.getBaseInstant(),
+        m.getPartitionFingerprint(),
+        m.getFileCount());
+  }
+
   private PartitionLookupDescriptor tryLoadLatestDescriptor(
       HoodieTable hoodieTable,
       String partitionPath,
       PartitionBaseFileState expectedState) {
 
     HoodieStorage storage = hoodieTable.getStorage();
+    if (hoodieTable.getMetaClient().getTableConfig().isMetadataPartitionAvailable(MetadataPartitionType.RADIX_SPLINE_INDEX)) {
+      Option<HoodieRadixSplineIndexManifest> mdtManifest =
+          hoodieTable.getMetadataTable().getRadixSplineIndexManifest(sanitizePartition(partitionPath));
+      if (mdtManifest.isPresent()) {
+        PartitionLookupDescriptor fromMdt =
+            buildDescriptorFromManifestFields(
+                partitionPath, mdtManifest.get(), expectedState, storage);
+        if (fromMdt != null) {
+          LOG.info("RADIX manifest loaded from metadata table: partition={}", partitionPath);
+          return fromMdt;
+        }
+      }
+    }
+
     StoragePath manifestPath = resolveLatestManifestPath(hoodieTable, partitionPath);
     try {
       if (!storage.exists(manifestPath)) {
@@ -960,11 +1207,12 @@ public class HoodieRadixSplineIndex extends HoodieIndex<Object, Object> {
 
   private Map<String, PartitionLookupRuntime> buildRuntimeMap(
       List<PartitionLookupDescriptor> descriptors) {
-    Map<String, PartitionLookupRuntime> runtimeByPartition = new HashMap<>();
+    Map<String, PartitionLookupRuntime> runtimeByPartition =
+        new HashMap<>(hashMapCapacityForExpectedSize(descriptors.size()));
     for (PartitionLookupDescriptor descriptor : descriptors) {
       runtimeByPartition.put(
           descriptor.getPartitionPath(),
-          new PartitionLookupRuntime(descriptor));
+          new PartitionLookupRuntime(descriptor, radixLookupWindowParams));
     }
     return runtimeByPartition;
   }

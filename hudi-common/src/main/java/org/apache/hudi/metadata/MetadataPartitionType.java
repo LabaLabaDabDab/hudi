@@ -21,6 +21,7 @@ package org.apache.hudi.metadata;
 import org.apache.hudi.avro.model.HoodieMetadataBloomFilter;
 import org.apache.hudi.avro.model.HoodieMetadataColumnStats;
 import org.apache.hudi.avro.model.HoodieMetadataFileInfo;
+import org.apache.hudi.avro.model.HoodieRadixSplineIndexManifest;
 import org.apache.hudi.avro.model.HoodieRecordIndexInfo;
 import org.apache.hudi.avro.model.HoodieSecondaryIndexInfo;
 import org.apache.hudi.common.config.HoodieMetadataConfig;
@@ -34,6 +35,7 @@ import org.apache.hudi.index.expression.HoodieExpressionIndex;
 import org.apache.hudi.stats.ValueMetadata;
 
 import org.apache.avro.generic.GenericRecord;
+import org.apache.avro.specific.SpecificData;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -73,6 +75,7 @@ import static org.apache.hudi.metadata.HoodieMetadataPayload.RECORD_INDEX_FIELD_
 import static org.apache.hudi.metadata.HoodieMetadataPayload.RECORD_INDEX_FIELD_POSITION;
 import static org.apache.hudi.metadata.HoodieMetadataPayload.SCHEMA_FIELD_ID_BLOOM_FILTER;
 import static org.apache.hudi.metadata.HoodieMetadataPayload.SCHEMA_FIELD_ID_COLUMN_STATS;
+import static org.apache.hudi.metadata.HoodieMetadataPayload.SCHEMA_FIELD_ID_RADIX_SPLINE;
 import static org.apache.hudi.metadata.HoodieMetadataPayload.SCHEMA_FIELD_ID_RECORD_INDEX;
 import static org.apache.hudi.metadata.HoodieMetadataPayload.SCHEMA_FIELD_ID_SECONDARY_INDEX;
 import static org.apache.hudi.metadata.HoodieMetadataPayload.SCHEMA_FIELD_NAME_METADATA;
@@ -233,6 +236,34 @@ public enum MetadataPartitionType {
     @Override
     public SerializableBiFunction<String, Integer, Integer> getFileGroupMappingFunction(HoodieIndexVersion indexVersion) {
       return HoodieTableMetadataUtil.getSecondaryKeyToFileGroupMappingFunction(indexVersion.greaterThanOrEquals(HoodieIndexVersion.V2));
+    }
+  },
+  RADIX_SPLINE_INDEX(HoodieTableMetadataUtil.PARTITION_NAME_RADIX_SPLINE_INDEX, "radix-spline-", 8) {
+    @Override
+    public boolean isMetadataPartitionEnabled(HoodieMetadataConfig metadataConfig, HoodieTableConfig tableConfig) {
+      if (!metadataConfig.isRadixSplineIndexMetadataEnabled()) {
+        return false;
+      }
+      if (HoodieTableMetadataUtil.tableConfigIndicatesRadixSplineIndex(tableConfig)) {
+        return true;
+      }
+      // Already registered (e.g. older tables without hoodie.index.type in hoodie.properties).
+      return tableConfig.isMetadataPartitionAvailable(RADIX_SPLINE_INDEX);
+    }
+
+    @Override
+    public void constructMetadataPayload(HoodieMetadataPayload payload, GenericRecord record) {
+      GenericRecord radixRecord = getNestedFieldValue(record, SCHEMA_FIELD_ID_RADIX_SPLINE);
+      if (radixRecord == null) {
+        checkArgument(
+            record.getSchema().getField(SCHEMA_FIELD_ID_RADIX_SPLINE) == null,
+            String.format(
+                "Valid %s record expected for type: %s",
+                SCHEMA_FIELD_ID_RADIX_SPLINE, MetadataPartitionType.RADIX_SPLINE_INDEX.getRecordType()));
+      } else {
+        payload.radixSplineIndexMetadata =
+            (HoodieRadixSplineIndexManifest) SpecificData.get().deepCopy(HoodieRadixSplineIndexManifest.SCHEMA$, radixRecord);
+      }
     }
   },
   PARTITION_STATS(HoodieTableMetadataUtil.PARTITION_NAME_PARTITION_STATS, "partition-stats-", 6) {

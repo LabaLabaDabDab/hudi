@@ -170,6 +170,25 @@ public final class HoodieMetadataConfig extends HoodieConfig {
       .sinceVersion("0.11.0")
       .withDocumentation("Parallelism to use for generating bloom filter index in metadata table.");
 
+  public static final ConfigProperty<Boolean> ENABLE_METADATA_INDEX_RADIX_SPLINE = ConfigProperty
+      .key(METADATA_PREFIX + ".index.radix_spline.enable")
+      .defaultValue(true)
+      .markAdvanced()
+      .sinceVersion("1.2.0")
+      .withDocumentation(
+          "When true (default), the radix_spline_index metadata partition is eligible when the data table is "
+              + "configured for the radix spline index (hoodie.index.type=RADIX_SPLINE or radix index class in "
+              + "hoodie.properties), or the partition was already registered. Per-commit manifest indexing runs only "
+              + "for writes using that index. The radix binary artifact stays on the data table; MDT stores manifest "
+              + "pointers mirroring .hoodie/.radix_index_tmp/latest/*.properties. Set to false to disable entirely.");
+
+  public static final ConfigProperty<Integer> METADATA_INDEX_RADIX_SPLINE_FILE_GROUP_COUNT = ConfigProperty
+      .key(METADATA_PREFIX + ".index.radix_spline.file.group.count")
+      .defaultValue(2)
+      .markAdvanced()
+      .sinceVersion("1.2.0")
+      .withDocumentation("File group count for radix_spline_index metadata partition.");
+
   public static final ConfigProperty<Boolean> ENABLE_METADATA_INDEX_COLUMN_STATS = ConfigProperty
       .key(METADATA_PREFIX + ".index.column.stats.enable")
       .defaultValue(false)
@@ -614,6 +633,14 @@ public final class HoodieMetadataConfig extends HoodieConfig {
 
   public boolean isBloomFilterIndexEnabled() {
     return getBooleanOrDefault(ENABLE_METADATA_INDEX_BLOOM_FILTER);
+  }
+
+  public boolean isRadixSplineIndexMetadataEnabled() {
+    return getBooleanOrDefault(ENABLE_METADATA_INDEX_RADIX_SPLINE);
+  }
+
+  public int getRadixSplineIndexFileGroupCount() {
+    return getIntOrDefault(METADATA_INDEX_RADIX_SPLINE_FILE_GROUP_COUNT);
   }
 
   public boolean isColumnStatsIndexEnabled() {

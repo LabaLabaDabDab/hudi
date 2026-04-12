@@ -31,10 +31,32 @@ Env:
   HUDI_BASE_ROOT — default file:///tmp/hudi_bench/trips_cow if unset.
   HUDI_SPARK_JARS — comma-separated paths to Hudi fat jar(s); required unless you use spark-submit --jars.
   HUDI_TABLE_NAME, N_INITIAL, N_UPDATES, N_INSERTS, ROUNDS
+  HUDI_KEY_DISTRIBUTION — synthetic record key shape: linear, quadratic, affine7919, triangular, poly_sum
+  BENCH_SPARK_SHUFFLE_PARTITIONS, BENCH_SPARK_DEFAULT_PARALLELISM — optional Spark tuning for large N_*
+  BENCH_SPARK_DRIVER_MAX_RESULT_SIZE, BENCH_SPARK_EXECUTOR_MEMORY_OVERHEAD — optional (e.g. multi-million rows)
+  BENCH_SPARK_EXECUTOR_MEMORY, BENCH_SPARK_DRIVER_MEMORY — passed through spark-submit (Docker large runs)
   HUDI_INDEX_FILTER — comma-separated subset of profile ids (default: all)
   HUDI_BUCKET_NUM_BUCKETS — for BUCKET profiles (default: 64)
+  BUCKET + CONSISTENT_HASHING — not valid for COPY_ON_WRITE (benchmark default); use MOR or only SIMPLE bucket engine.
+  HUDI_CLEANUP_AFTER_PROFILE — delete all round paths for profile after it finishes (default: true)
+  HUDI_BENCH_LOG_LEVEL — Spark log level (default: WARN), e.g. INFO/DEBUG
+  HUDI_RADIX_PROFILE_TAG_LOCATION — if true, sets hoodie.index.radix_spline.profile_tag_location=true
+    for the RADIX_SPLINE profile so each Spark task logs a timing breakdown (encode / reader / lookup / entry read).
+    Use with HUDI_BENCH_LOG_LEVEL=INFO. Rebuild the Hudi bundle after changing Java code.
+  HUDI_RADIX_LOOKUP_WINDOW_KEYS — optional hoodie.index.radix_spline.lookup_window_keys
+  HUDI_RADIX_LOOKUP_WINDOW_ADAPTIVE — if true, hoodie.index.radix_spline.lookup_window_adaptive=true
+  HUDI_RADIX_LOOKUP_WINDOW_ADAPTIVE_MIN, HUDI_RADIX_LOOKUP_WINDOW_ADAPTIVE_MAX,
+  HUDI_RADIX_LOOKUP_WINDOW_ADAPTIVE_CALIBRATION_KEYS — optional when adaptive is on
+  HUDI_METADATA_INDEX_RADIX_SPLINE_ENABLE — if true/false, sets hoodie.metadata.index.radix_spline.enable
+    (A/B vs Java default). Omit to use the default from the Hudi JAR.
 
 Docker Compose (this repo, docker-compose.yml):
+  Image Spark 3.5.7 + Scala 2.12 + Java 17 matches hudi-spark3.5-bundle_2.12. From repo root:
+    ./run-docker-baseline-benchmark.sh
+  Or inside hudi-dev after compose up:
+    /workspace/hudi/scripts/run-baseline-benchmark-in-container.sh
+  Compare several index types (Docker, COW-safe list; tune N_* on the host):
+    ./run-docker-index-comparison.sh
   Namenode RPC is published on the host as localhost:9000; Web UI http://localhost:9870 .
   Service hudi-dev sets HUDI_BASE_ROOT=hdfs://namenode:9000/user/hudi/trips_cow for in-network access.
   If you run Spark on the host (not in a container), use:
@@ -48,12 +70,20 @@ Hudi JAR (required — plain Spark does not include Hudi):
     export HUDI_SPARK_JARS="$PWD/packaging/hudi-spark-bundle/target/hudi-spark3.5-bundle_2.12-"*.jar
     spark-submit baseline_benchmark.py
 
+  Spark 4.x + Scala 2.13 (e.g. Homebrew Spark) — соберите bundle с профилями проекта, затем:
+
+    mvn -Dspark4.0 -Dscala-2.13 -pl packaging/hudi-spark-bundle -am -DskipTests package
+    export HUDI_SPARK_JARS="$PWD/packaging/hudi-spark-bundle/target/hudi-spark4.0-bundle_2.13-"*.jar
+
   (Шаблон с * можно передать в кавычках — скрипт сам раскроет glob в Python;
   zsh иначе может оставить буквальную строку .../*.jar и Spark не найдёт файл.)
 
   or:
 
     spark-submit --jars /path/to/hudi-spark3.5-bundle_2.12-1.1.1.jar baseline_benchmark.py
+
+  With spark-submit, pass the same bundle via --jars (not only HUDI_SPARK_JARS): some setups
+  never put the datasource on the driver URLClassLoader unless the jar is on the submit line.
 
   HUDI_SPARK_JARS may list several jars separated by commas. The bundle major Spark/Scala
   line must match your Spark (e.g. Spark 3.5 + Scala 2.12 vs Homebrew Spark 4.x — versions
@@ -82,6 +112,39 @@ N_UPDATES = int(os.environ.get("N_UPDATES", "100000"))
 N_INSERTS = int(os.environ.get("N_INSERTS", "100000"))
 ROUNDS = int(os.environ.get("ROUNDS", "3"))
 BUCKET_NUM = int(os.environ.get("HUDI_BUCKET_NUM_BUCKETS", "64"))
+CLEANUP_AFTER_PROFILE = os.environ.get("HUDI_CLEANUP_AFTER_PROFILE", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "y",
+    "on",
+)
+BENCH_LOG_LEVEL = os.environ.get("HUDI_BENCH_LOG_LEVEL", "WARN").strip().upper()
+RADIX_PROFILE_TAG_LOCATION = os.environ.get("HUDI_RADIX_PROFILE_TAG_LOCATION", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "y",
+    "on",
+)
+RADIX_MAX_ERROR = os.environ.get("HUDI_RADIX_MAX_ERROR", "").strip()
+RADIX_BITS = os.environ.get("HUDI_RADIX_BITS", "").strip()
+RADIX_LOOKUP_WINDOW_KEYS = os.environ.get("HUDI_RADIX_LOOKUP_WINDOW_KEYS", "").strip()
+RADIX_LOOKUP_WINDOW_ADAPTIVE = os.environ.get("HUDI_RADIX_LOOKUP_WINDOW_ADAPTIVE", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "y",
+    "on",
+)
+RADIX_LOOKUP_WINDOW_ADAPTIVE_MIN = os.environ.get("HUDI_RADIX_LOOKUP_WINDOW_ADAPTIVE_MIN", "").strip()
+RADIX_LOOKUP_WINDOW_ADAPTIVE_MAX = os.environ.get("HUDI_RADIX_LOOKUP_WINDOW_ADAPTIVE_MAX", "").strip()
+RADIX_LOOKUP_WINDOW_ADAPTIVE_CALIBRATION_KEYS = os.environ.get(
+    "HUDI_RADIX_LOOKUP_WINDOW_ADAPTIVE_CALIBRATION_KEYS", ""
+).strip()
+KEY_DISTRIBUTION = os.environ.get("HUDI_KEY_DISTRIBUTION", "quadratic").strip().lower()
+
+_METADATA_RADIX_ENABLE_RAW = os.environ.get("HUDI_METADATA_INDEX_RADIX_SPLINE_ENABLE", "").strip().lower()
 
 # Comma-separated profile ids; empty = all
 _INDEX_FILTER_RAW = os.environ.get("HUDI_INDEX_FILTER", "").strip()
@@ -90,6 +153,45 @@ if _INDEX_FILTER_RAW:
     INDEX_FILTER = {x.strip() for x in _INDEX_FILTER_RAW.split(",") if x.strip()}
 
 _SPARK: Optional[SparkSession] = None
+
+
+def _spread_seed_sql(row_id_col: str) -> str:
+    """Map monotonic row id -> [0, N_INITIAL) without 32-bit overflow in pmod."""
+    return (
+        f"pmod(cast({row_id_col} as bigint) * cast(15485863 as bigint), cast({N_INITIAL} as bigint))"
+    )
+
+
+def _key_expr(seed_col: str) -> str:
+    """
+    Build benchmark record-key expression from a monotonic seed column.
+    All modes are strictly increasing in seed for seed >= 0, so keys stay unique
+    across bulk / upserts / inserts for the same seed ranges.
+
+    Expressions use bigint and integral ops only: RADIX_SPLINE rejects DOUBLE record keys
+    (Spark SQL ``/`` promotes to floating point).
+
+    - linear: id = seed
+    - quadratic: id = seed^2 (dense low keys)
+    - affine7919: id = seed * 7919 (spread, still injective for bounded seed)
+    - triangular: id = seed * (seed + 1) / 2 (integer div)
+    - poly_sum: id = seed^2 + seed
+    """
+    s = f"cast({seed_col} as bigint)"
+    if KEY_DISTRIBUTION == "linear":
+        return s
+    if KEY_DISTRIBUTION == "quadratic":
+        return f"({s} * {s})"
+    if KEY_DISTRIBUTION == "affine7919":
+        return f"({s} * cast(7919 as bigint))"
+    if KEY_DISTRIBUTION == "triangular":
+        return f"div({s} * ({s} + cast(1 as bigint)), cast(2 as bigint))"
+    if KEY_DISTRIBUTION == "poly_sum":
+        return f"(({s} * {s}) + {s})"
+    raise ValueError(
+        f"Unsupported HUDI_KEY_DISTRIBUTION={KEY_DISTRIBUTION!r}. "
+        "Use one of: linear, quadratic, affine7919, triangular, poly_sum."
+    )
 
 
 def _is_auxiliary_maven_jar(path: str) -> bool:
@@ -162,8 +264,20 @@ def init_spark() -> SparkSession:
         jars = _resolve_hudi_spark_jars(jars_raw)
         if jars:
             builder = builder.config("spark.jars", jars)
+    _shuffle = os.environ.get("BENCH_SPARK_SHUFFLE_PARTITIONS", "").strip()
+    if _shuffle:
+        builder = builder.config("spark.sql.shuffle.partitions", _shuffle)
+    _par = os.environ.get("BENCH_SPARK_DEFAULT_PARALLELISM", "").strip()
+    if _par:
+        builder = builder.config("spark.default.parallelism", _par)
+    _mem = os.environ.get("BENCH_SPARK_DRIVER_MAX_RESULT_SIZE", "").strip()
+    if _mem:
+        builder = builder.config("spark.driver.maxResultSize", _mem)
+    _overhead = os.environ.get("BENCH_SPARK_EXECUTOR_MEMORY_OVERHEAD", "").strip()
+    if _overhead:
+        builder = builder.config("spark.executor.memoryOverhead", _overhead)
     _SPARK = builder.getOrCreate()
-    _SPARK.sparkContext.setLogLevel("WARN")
+    _SPARK.sparkContext.setLogLevel(BENCH_LOG_LEVEL)
     return _SPARK
 
 
@@ -178,24 +292,37 @@ def require_hudi_or_exit() -> None:
     spark = active_spark()
     jvm = spark._jvm
     # Py4J's plain Class.forName() uses the wrong loader; jars from spark.jars live on Spark's URLClassLoader.
-    loader = jvm.org.apache.spark.util.Utils.getContextOrSparkClassLoader()
+    loaders = []
     try:
-        jvm.java.lang.Class.forName("org.apache.hudi.DefaultSource", True, loader)
+        loaders.append(jvm.org.apache.spark.util.Utils.getContextOrSparkClassLoader())
     except Exception:
-        print(
-            "\nОшибка: для Spark classloader не виден org.apache.hudi.DefaultSource.\n"
-            "Если JAR уже в spark.jars, это редко — сообщите; чаще Hudi просто не подключён.\n\n"
-            "Соберите bundle:\n"
-            "  mvn -Dspark3.5 -Dscala-2.12 -pl packaging/hudi-spark-bundle -am -DskipTests package\n\n"
-            "Укажите основной JAR (не *-sources.jar):\n"
-            "  export HUDI_SPARK_JARS=$PWD/packaging/hudi-spark-bundle/target/hudi-spark3.5-bundle_2.12-1.1.1.jar\n"
-            "  spark-submit baseline_benchmark.py\n\n"
-            "Важно: у вас Spark 4.x из Homebrew, а bundle — для Spark 3.5. Проверка класса может пройти,\n"
-            "но запись в Hudi дальше может упасть из‑за несовместимости ABI — надёжнее Spark 3.5 + тот же bundle\n"
-            "(например Spark из docker-compose в этом репозитории).\n",
-            file=sys.stderr,
-        )
-        raise SystemExit(2)
+        pass
+    try:
+        loaders.append(jvm.java.lang.Thread.currentThread().getContextClassLoader())
+    except Exception:
+        pass
+    last_err: Optional[BaseException] = None
+    for loader in loaders:
+        try:
+            jvm.java.lang.Class.forName("org.apache.hudi.DefaultSource", True, loader)
+            return
+        except Exception as e:
+            last_err = e
+            continue
+    print(
+        "\nОшибка: для Spark classloader не виден org.apache.hudi.DefaultSource.\n"
+        "Если JAR уже в spark.jars, это редко — сообщите; чаще Hudi просто не подключён.\n\n"
+        "Соберите bundle:\n"
+        "  mvn -Dspark3.5 -Dscala-2.12 -pl packaging/hudi-spark-bundle -am -DskipTests package\n\n"
+        "Укажите основной JAR (не *-sources.jar):\n"
+        "  export HUDI_SPARK_JARS=$PWD/packaging/hudi-spark-bundle/target/hudi-spark3.5-bundle_2.12-1.1.1.jar\n"
+        "  spark-submit baseline_benchmark.py\n\n"
+        "Важно: у вас Spark 4.x из Homebrew, а bundle — для Spark 3.5. Проверка класса может пройти,\n"
+        "но запись в Hudi дальше может упасть из‑за несовместимости ABI — надёжнее Spark 3.5 + тот же bundle\n"
+        "(например Spark из docker-compose в этом репозитории).\n",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
 
 common_options: Dict[str, str] = {
     "hoodie.table.name": TABLE_NAME,
@@ -206,6 +333,10 @@ common_options: Dict[str, str] = {
     # Metadata table is on by default; explicit for record-level index profiles
     "hoodie.metadata.enable": "true",
 }
+if _METADATA_RADIX_ENABLE_RAW in ("1", "true", "yes", "y", "on"):
+    common_options["hoodie.metadata.index.radix_spline.enable"] = "true"
+elif _METADATA_RADIX_ENABLE_RAW in ("0", "false", "no", "n", "off"):
+    common_options["hoodie.metadata.index.radix_spline.enable"] = "false"
 
 
 def spark_index_profiles() -> List[Dict[str, Any]]:
@@ -283,7 +414,51 @@ def spark_index_profiles() -> List[Dict[str, Any]]:
         {
             "id": "RADIX_SPLINE",
             "label": "RADIX_SPLINE",
-            "options": {"hoodie.index.type": "RADIX_SPLINE"},
+            "options": {
+                **{"hoodie.index.type": "RADIX_SPLINE"},
+                **(
+                    {"hoodie.index.radix_spline.profile_tag_location": "true"}
+                    if RADIX_PROFILE_TAG_LOCATION
+                    else {}
+                ),
+                **(
+                    {"hoodie.index.radix_spline.max_error": RADIX_MAX_ERROR}
+                    if RADIX_MAX_ERROR
+                    else {}
+                ),
+                **(
+                    {"hoodie.index.radix_spline.radix_bits": RADIX_BITS}
+                    if RADIX_BITS
+                    else {}
+                ),
+                **(
+                    {"hoodie.index.radix_spline.lookup_window_keys": RADIX_LOOKUP_WINDOW_KEYS}
+                    if RADIX_LOOKUP_WINDOW_KEYS
+                    else {}
+                ),
+                **(
+                    {"hoodie.index.radix_spline.lookup_window_adaptive": "true"}
+                    if RADIX_LOOKUP_WINDOW_ADAPTIVE
+                    else {}
+                ),
+                **(
+                    {"hoodie.index.radix_spline.lookup_window_adaptive_min": RADIX_LOOKUP_WINDOW_ADAPTIVE_MIN}
+                    if RADIX_LOOKUP_WINDOW_ADAPTIVE_MIN
+                    else {}
+                ),
+                **(
+                    {"hoodie.index.radix_spline.lookup_window_adaptive_max": RADIX_LOOKUP_WINDOW_ADAPTIVE_MAX}
+                    if RADIX_LOOKUP_WINDOW_ADAPTIVE_MAX
+                    else {}
+                ),
+                **(
+                    {
+                        "hoodie.index.radix_spline.lookup_window_adaptive_calibration_keys": RADIX_LOOKUP_WINDOW_ADAPTIVE_CALIBRATION_KEYS
+                    }
+                    if RADIX_LOOKUP_WINDOW_ADAPTIVE_CALIBRATION_KEYS
+                    else {}
+                ),
+            },
         },
     ]
 
@@ -337,9 +512,12 @@ def build_initial_df():
     spark = active_spark()
     return (
         spark.range(0, N_INITIAL)
+        .withColumnRenamed("id", "seed")
+        .withColumn("id", expr(_key_expr("seed")))
         .withColumn("ts", expr("id"))
-        .withColumn("dt", expr("concat('2026-03-', lpad(cast((id % 10) + 1 as string), 2, '0'))"))
+        .withColumn("dt", expr("concat('2026-03-', lpad(cast((seed % 10) + 1 as string), 2, '0'))"))
         .withColumn("payload", expr("concat('v_', id)"))
+        .drop("seed")
     )
 
 
@@ -347,10 +525,13 @@ def build_scattered_updates_df():
     spark = active_spark()
     return (
         spark.range(0, N_UPDATES)
-        .withColumn("id", expr(f"pmod(id * 15485863, {N_INITIAL})"))
+        .withColumnRenamed("id", "row_id")
+        .withColumn("seed", expr(_spread_seed_sql("row_id")))
+        .withColumn("id", expr(_key_expr("seed")))
         .withColumn("ts", expr("id + 100000000"))
-        .withColumn("dt", expr("concat('2026-03-', lpad(cast((id % 10) + 1 as string), 2, '0'))"))
+        .withColumn("dt", expr("concat('2026-03-', lpad(cast((seed % 10) + 1 as string), 2, '0'))"))
         .withColumn("payload", expr("concat('updated_', id)"))
+        .drop("seed", "row_id")
     )
 
 
@@ -358,9 +539,12 @@ def build_new_inserts_df():
     spark = active_spark()
     return (
         spark.range(N_INITIAL, N_INITIAL + N_INSERTS)
+        .withColumnRenamed("id", "seed")
+        .withColumn("id", expr(_key_expr("seed")))
         .withColumn("ts", expr("id + 200000000"))
-        .withColumn("dt", expr("concat('2026-03-', lpad(cast((id % 10) + 1 as string), 2, '0'))"))
+        .withColumn("dt", expr("concat('2026-03-', lpad(cast((seed % 10) + 1 as string), 2, '0'))"))
         .withColumn("payload", expr("concat('new_', id)"))
+        .drop("seed")
     )
 
 
@@ -368,17 +552,23 @@ def build_mixed_df():
     spark = active_spark()
     existing_part = (
         spark.range(0, N_UPDATES // 2)
-        .withColumn("id", expr(f"pmod(id * 15485863, {N_INITIAL})"))
+        .withColumnRenamed("id", "row_id")
+        .withColumn("seed", expr(_spread_seed_sql("row_id")))
+        .withColumn("id", expr(_key_expr("seed")))
         .withColumn("ts", expr("id + 300000000"))
-        .withColumn("dt", expr("concat('2026-03-', lpad(cast((id % 10) + 1 as string), 2, '0'))"))
+        .withColumn("dt", expr("concat('2026-03-', lpad(cast((seed % 10) + 1 as string), 2, '0'))"))
         .withColumn("payload", expr("concat('mixed_existing_', id)"))
+        .drop("seed", "row_id")
     )
 
     new_part = (
         spark.range(N_INITIAL + N_INSERTS, N_INITIAL + N_INSERTS + (N_UPDATES // 2))
+        .withColumnRenamed("id", "seed")
+        .withColumn("id", expr(_key_expr("seed")))
         .withColumn("ts", expr("id + 400000000"))
-        .withColumn("dt", expr("concat('2026-03-', lpad(cast((id % 10) + 1 as string), 2, '0'))"))
+        .withColumn("dt", expr("concat('2026-03-', lpad(cast((seed % 10) + 1 as string), 2, '0'))"))
         .withColumn("payload", expr("concat('mixed_new_', id)"))
+        .drop("seed")
     )
 
     return existing_part.unionByName(new_part)
@@ -387,6 +577,15 @@ def build_mixed_df():
 def round_path(profile_id: str, round_no: int) -> str:
     safe = profile_id.replace(" ", "_")
     return f"{BASE_ROOT.rstrip('/')}_{safe}_round_{round_no}"
+
+
+def cleanup_profile_round_paths(profile_id: str) -> None:
+    """Best-effort cleanup of all per-round table paths for one profile."""
+    for r in range(1, ROUNDS + 1):
+        try:
+            delete_path_if_exists(round_path(profile_id, r))
+        except Exception as e:
+            print(f"WARNING: cleanup failed for {profile_id} round {r}: {e}", file=sys.stderr)
 
 
 def run_one_round(profile: Dict[str, Any], round_no: int) -> Dict[str, Any]:
@@ -542,7 +741,8 @@ def main() -> int:
 
     print(
         f"Benchmark: {len(profiles)} index profile(s), {ROUNDS} round(s), "
-        f"initial={N_INITIAL}, updates={N_UPDATES}, inserts={N_INSERTS}, base={BASE_ROOT}"
+        f"initial={N_INITIAL}, updates={N_UPDATES}, inserts={N_INSERTS}, "
+        f"key_distribution={KEY_DISTRIBUTION}, base={BASE_ROOT}"
     )
     for p in profiles:
         print(f"  - {p['id']}: {p['label']}")
@@ -555,6 +755,9 @@ def main() -> int:
             all_by_profile[p["id"]].append(m)
             status = "OK" if m["ok"] else "FAIL"
             print(f"[{status}] {p['id']} round {r}: {m}")
+        if CLEANUP_AFTER_PROFILE:
+            cleanup_profile_round_paths(p["id"])
+            print(f"[CLEANUP] deleted round paths for profile {p['id']}")
 
     summaries: List[Dict[str, Any]] = []
     for p in profiles:

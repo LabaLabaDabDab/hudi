@@ -30,9 +30,13 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.RandomAccessFile;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Objects;
 
 final class SimpleTempRadixArtifactWriter implements TempRadixArtifactWriter {
@@ -40,7 +44,9 @@ final class SimpleTempRadixArtifactWriter implements TempRadixArtifactWriter {
   private static final Logger LOG = LoggerFactory.getLogger(SimpleTempRadixArtifactWriter.class);
 
   static final int MAGIC = 0x52534958; // RSIX
-  static final int VERSION = 2;
+  static final int VERSION = 4;
+  static final int LEGACY_VERSION = 2;
+  static final int UTF8_VERSION = 3;
 
   static final int HEADER_SIZE =
       Integer.BYTES + Integer.BYTES
@@ -109,6 +115,10 @@ final class SimpleTempRadixArtifactWriter implements TempRadixArtifactWriter {
     long minKey = Long.MAX_VALUE;
     long maxKey = Long.MIN_VALUE;
     RadixLocationEntry prev = null;
+    LinkedHashMap<String, Integer> instantTimeDict = new LinkedHashMap<>();
+    LinkedHashMap<String, Integer> fileIdDict = new LinkedHashMap<>();
+    List<String> instantTimes = new ArrayList<>();
+    List<String> fileIds = new ArrayList<>();
 
     try {
       long materializeStartedNanos = System.nanoTime();
@@ -155,7 +165,7 @@ final class SimpleTempRadixArtifactWriter implements TempRadixArtifactWriter {
           long entryOffset = entriesRaf.getFilePointer();
           offsetsOut.writeLong(entryOffset);
           keysOut.writeLong(entry.getEncodedKey());
-          writeEntry(entriesRaf, entry);
+          writeEntry(entriesRaf, entry, instantTimeDict, fileIdDict, instantTimes, fileIds);
 
           minKey = Math.min(minKey, entry.getEncodedKey());
           maxKey = Math.max(maxKey, entry.getEncodedKey());
@@ -224,6 +234,7 @@ final class SimpleTempRadixArtifactWriter implements TempRadixArtifactWriter {
       long keysOffset;
       long entryOffsetsOffset;
       long entriesOffset;
+      long dictionaryBytes = 0L;
 
       long phaseNanos = System.nanoTime();
       try (CountingOutputStream countingOut =
@@ -251,11 +262,20 @@ final class SimpleTempRadixArtifactWriter implements TempRadixArtifactWriter {
         writeLongArrayFromFile(out, keysFile, n);
 
         entryOffsetsOffset = countingOut.getCount();
-        writeLongArrayFromFile(out, offsetsFile, n);
+        if (VERSION >= 4) {
+          dictionaryBytes = estimateDictionaryBytes(instantTimes, fileIds);
+          writeLongArrayFromFileWithDelta(out, offsetsFile, n, dictionaryBytes);
+        } else {
+          writeLongArrayFromFile(out, offsetsFile, n);
+        }
         assembleKeysOffsetsMs = elapsedMs(phaseNanos);
 
         phaseNanos = System.nanoTime();
         entriesOffset = countingOut.getCount();
+        if (VERSION >= 4) {
+          writeStringDictionary(out, instantTimes);
+          writeStringDictionary(out, fileIds);
+        }
         copyFile(entriesFile, out);
         assembleEntriesMs = elapsedMs(phaseNanos);
 
@@ -386,11 +406,58 @@ final class SimpleTempRadixArtifactWriter implements TempRadixArtifactWriter {
     out.writeLong(entriesOffset);
   }
 
-  private static void writeEntry(RandomAccessFile out, RadixLocationEntry entry) throws IOException {
+  private static void writeEntry(
+      RandomAccessFile out,
+      RadixLocationEntry entry,
+      LinkedHashMap<String, Integer> instantTimeDict,
+      LinkedHashMap<String, Integer> fileIdDict,
+      List<String> instantTimes,
+      List<String> fileIds) throws IOException {
     out.writeLong(entry.getEncodedKey());
-    out.writeUTF(entry.getRecordKey());
-    out.writeUTF(entry.getLocation().getInstantTime());
-    out.writeUTF(entry.getLocation().getFileId());
+    writeStringUtf8(out, entry.getRecordKey());
+    out.writeInt(dictionaryId(instantTimeDict, instantTimes, entry.getLocation().getInstantTime()));
+    out.writeInt(dictionaryId(fileIdDict, fileIds, entry.getLocation().getFileId()));
+  }
+
+  private static void writeStringUtf8(RandomAccessFile out, String value) throws IOException {
+    byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+    out.writeInt(bytes.length);
+    out.write(bytes);
+  }
+
+  private static int dictionaryId(
+      LinkedHashMap<String, Integer> dict,
+      List<String> values,
+      String value) {
+    Integer id = dict.get(value);
+    if (id != null) {
+      return id;
+    }
+    int nextId = values.size();
+    values.add(value);
+    dict.put(value, nextId);
+    return nextId;
+  }
+
+  private static long estimateDictionaryBytes(List<String> instantTimes, List<String> fileIds) {
+    return estimateSingleDictionaryBytes(instantTimes) + estimateSingleDictionaryBytes(fileIds);
+  }
+
+  private static long estimateSingleDictionaryBytes(List<String> values) {
+    long total = Integer.BYTES; // count
+    for (String value : values) {
+      total += Integer.BYTES + value.getBytes(StandardCharsets.UTF_8).length;
+    }
+    return total;
+  }
+
+  private static void writeStringDictionary(DataOutputStream out, List<String> values) throws IOException {
+    out.writeInt(values.size());
+    for (String value : values) {
+      byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+      out.writeInt(bytes.length);
+      out.write(bytes);
+    }
   }
 
   private static void writeLongArrayFromFile(DataOutputStream out, Path file, int count)
@@ -405,6 +472,19 @@ final class SimpleTempRadixArtifactWriter implements TempRadixArtifactWriter {
         din.readFully(buffer, 0, byteLen);
         out.write(buffer, 0, byteLen);
         remaining -= batch;
+      }
+    }
+  }
+
+  private static void writeLongArrayFromFileWithDelta(
+      DataOutputStream out,
+      Path file,
+      int count,
+      long delta) throws IOException {
+    try (BufferedInputStream bin = new BufferedInputStream(Files.newInputStream(file), COPY_BUFFER_SIZE);
+        DataInputStream din = new DataInputStream(bin)) {
+      for (int i = 0; i < count; i++) {
+        out.writeLong(din.readLong() + delta);
       }
     }
   }

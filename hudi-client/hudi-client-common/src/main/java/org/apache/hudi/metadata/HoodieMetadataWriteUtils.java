@@ -71,6 +71,7 @@ import org.apache.hudi.config.metrics.HoodieMetricsM3Config;
 import org.apache.hudi.config.metrics.HoodieMetricsPrometheusConfig;
 import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.exception.HoodieMetadataException;
+import org.apache.hudi.index.HoodieIndex;
 import org.apache.hudi.stats.HoodieColumnRangeMetadata;
 import org.apache.hudi.storage.StoragePath;
 import org.apache.hudi.storage.StoragePathInfo;
@@ -134,6 +135,18 @@ public class HoodieMetadataWriteUtils {
   // ever. Hence, we use a very large basefile size in metadata table. The actual size of the HFiles created will
   // eventually depend on the number of file groups selected for each partition (See estimateFileGroupCount function)
   private static final long MDT_MAX_HFILE_SIZE_BYTES = 10 * 1024 * 1024 * 1024L; // 10GB
+
+  /**
+   * Radix spline manifest records in MDT are only meaningful when the data table write uses that index; skip work
+   * when another index is configured (e.g. async indexer or mixed tooling) while the radix partition remains listed.
+   */
+  static boolean dataWriteUsesRadixSplineIndex(HoodieWriteConfig dataWriteConfig) {
+    if (dataWriteConfig.getIndexType() == HoodieIndex.IndexType.RADIX_SPLINE) {
+      return true;
+    }
+    String cls = dataWriteConfig.getIndexClass();
+    return nonEmpty(cls) && cls.contains("HoodieRadixSplineIndex");
+  }
 
   /**
    * Create a {@code HoodieWriteConfig} to use for the Metadata Table.
@@ -400,6 +413,12 @@ public class HoodieMetadataWriteUtils {
     if (enabledPartitionTypes.contains(MetadataPartitionType.RECORD_INDEX.getPartitionPath())) {
       partitionToRecordsMap.put(MetadataPartitionType.RECORD_INDEX.getPartitionPath(), convertMetadataToRecordIndexRecords(context, commitMetadata, metadataConfig,
           dataMetaClient, writesFileIdEncoding, instantTime, engineType, enableOptimizeLogBlocksScan));
+    }
+    if (enabledPartitionTypes.contains(MetadataPartitionType.RADIX_SPLINE_INDEX.getPartitionPath())
+        && dataWriteUsesRadixSplineIndex(dataWriteConfig)) {
+      partitionToRecordsMap.put(
+          MetadataPartitionType.RADIX_SPLINE_INDEX.getPartitionPath(),
+          HoodieTableMetadataUtil.convertCommitToRadixSplineManifestRecords(context, dataMetaClient, commitMetadata));
     }
     return partitionToRecordsMap;
   }

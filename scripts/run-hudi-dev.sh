@@ -15,6 +15,15 @@ Useful commands:
   /opt/spark/bin/spark-shell --master spark://spark-master:7077 \
     --jars /workspace/hudi/packaging/hudi-spark-bundle/target/hudi-spark3.5-bundle_2.12-1.1.1.jar
 
+  Baseline benchmark (builds bundle on first run; Spark 3.5 + Scala 2.12 matches this image):
+    /workspace/hudi/scripts/run-baseline-benchmark-in-container.sh
+
+  From the repo on the host (starts compose + runs the same):
+    ./run-docker-baseline-benchmark.sh
+
+  Compare several index types (COW-safe list; logs under target/index-comparison-*.log):
+    ./run-docker-index-comparison.sh
+
 MSG
 
 exec bash

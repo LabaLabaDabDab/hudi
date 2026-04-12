@@ -554,6 +554,60 @@
                 }
             ],
             "default" : null
+        },
+        {
+            "name": "radixSplineIndexMetadata",
+            "doc": "Pointer to on-disk RADIX_SPLINE artifact for a data partition (manifest only; binary lives under .hoodie/.radix_index_tmp)",
+            "type": [
+                "null",
+                {
+                    "type": "record",
+                    "name": "HoodieRadixSplineIndexManifest",
+                    "fields": [
+                        {
+                            "name": "partitionPath",
+                            "type": "string",
+                            "doc": "Data table partition path"
+                        },
+                        {
+                            "name": "artifactPath",
+                            "type": "string",
+                            "doc": "URI/path to radix artifact .bin"
+                        },
+                        {
+                            "name": "entryCount",
+                            "type": "long"
+                        },
+                        {
+                            "name": "minKey",
+                            "type": "long"
+                        },
+                        {
+                            "name": "maxKey",
+                            "type": "long"
+                        },
+                        {
+                            "name": "baseInstant",
+                            "type": "string"
+                        },
+                        {
+                            "name": "partitionFingerprint",
+                            "type": "string"
+                        },
+                        {
+                            "name": "fileCount",
+                            "type": "int"
+                        },
+                        {
+                            "name": "isDeleted",
+                            "type": "boolean",
+                            "default": false,
+                            "doc": "True if manifest entry is invalidated"
+                        }
+                    ]
+                }
+            ],
+            "default": null
         }
     ]
 }

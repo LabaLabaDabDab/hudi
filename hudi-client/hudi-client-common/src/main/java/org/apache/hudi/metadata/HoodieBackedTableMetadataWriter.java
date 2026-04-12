@@ -139,6 +139,7 @@ import static org.apache.hudi.metadata.MetadataPartitionType.COLUMN_STATS;
 import static org.apache.hudi.metadata.MetadataPartitionType.EXPRESSION_INDEX;
 import static org.apache.hudi.metadata.MetadataPartitionType.FILES;
 import static org.apache.hudi.metadata.MetadataPartitionType.PARTITION_STATS;
+import static org.apache.hudi.metadata.MetadataPartitionType.RADIX_SPLINE_INDEX;
 import static org.apache.hudi.metadata.MetadataPartitionType.RECORD_INDEX;
 import static org.apache.hudi.metadata.MetadataPartitionType.SECONDARY_INDEX;
 import static org.apache.hudi.metadata.MetadataPartitionType.fromPartitionPath;
@@ -509,6 +510,11 @@ public abstract class HoodieBackedTableMetadataWriter<I, O> implements HoodieTab
             fileGroupCountAndRecordsPair = initializeSecondaryIndexPartition(relativePartitionPath, lazyLatestMergedPartitionFileSliceList);
             initializeFilegroupsAndCommit(partitionType, relativePartitionPath, fileGroupCountAndRecordsPair, instantTimeForPartition);
             break;
+          case RADIX_SPLINE_INDEX:
+            fileGroupCountAndRecordsPair = initializeRadixSplineMetadataPartition();
+            initializeFilegroupsAndCommit(
+                partitionType, RADIX_SPLINE_INDEX.getPartitionPath(), fileGroupCountAndRecordsPair, instantTimeForPartition);
+            break;
           default:
             throw new HoodieMetadataException(String.format("Unsupported MDT partition type: %s", partitionType));
         }
@@ -602,6 +608,18 @@ public abstract class HoodieBackedTableMetadataWriter<I, O> implements HoodieTab
 
     final int fileGroupCount = dataWriteConfig.getMetadataConfig().getBloomFilterIndexFileGroupCount();
     return Pair.of(fileGroupCount, records);
+  }
+
+  @SuppressWarnings("unchecked")
+  private Pair<Integer, HoodieData<HoodieRecord>> initializeRadixSplineMetadataPartition() throws IOException {
+    List<HoodieRecord<HoodieMetadataPayload>> records =
+        HoodieTableMetadataUtil.loadAllRadixSplineManifestRecordsForBootstrap(dataMetaClient);
+    int fileGroupCount = dataWriteConfig.getMetadataConfig().getRadixSplineIndexFileGroupCount();
+    HoodieData<HoodieRecord> data =
+        records.isEmpty()
+            ? engineContext.emptyHoodieData()
+            : (HoodieData<HoodieRecord>) (HoodieData<?>) engineContext.parallelize(records, Math.max(1, records.size()));
+    return Pair.of(fileGroupCount, data);
   }
 
   /**

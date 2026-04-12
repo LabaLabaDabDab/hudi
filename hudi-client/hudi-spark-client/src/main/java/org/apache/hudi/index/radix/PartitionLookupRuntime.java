@@ -27,13 +27,15 @@ final class PartitionLookupRuntime implements Serializable {
   private static final long serialVersionUID = 1L;
 
   private final PartitionLookupDescriptor descriptor;
+  private final RadixLookupWindowParams lookupWindowParams;
 
-  PartitionLookupRuntime(PartitionLookupDescriptor descriptor) {
+  PartitionLookupRuntime(PartitionLookupDescriptor descriptor, RadixLookupWindowParams lookupWindowParams) {
     this.descriptor = descriptor;
+    this.lookupWindowParams = lookupWindowParams;
   }
 
   TempRadixArtifactReader reader(StorageConfiguration<?> storageConf) {
-    return RadixArtifactReaderCache.getOrOpen(descriptor, storageConf);
+    return RadixArtifactReaderCache.getOrOpen(descriptor, storageConf, lookupWindowParams);
   }
 
   PartitionLookupDescriptor descriptor() {

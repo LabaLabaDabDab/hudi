@@ -59,7 +59,7 @@ final class RadixSplineKeyEncoder implements Serializable {
       case STRING_DECIMAL_COLUMN:
         return parseCanonicalNonNegativeLong(recordKey);
       default:
-        throw new IllegalArgumentException("Unsupported encoder mode: " + mode);
+        throw new IllegalStateException("Unsupported encoder mode: " + mode);
     }
   }
 
@@ -76,7 +76,8 @@ final class RadixSplineKeyEncoder implements Serializable {
     if (value == null) {
       throw new IllegalArgumentException("recordKey must not be null");
     }
-    if (value.isEmpty()) {
+    final int len = value.length();
+    if (len == 0) {
       throw new IllegalArgumentException("recordKey must not be empty");
     }
 
@@ -87,12 +88,12 @@ final class RadixSplineKeyEncoder implements Serializable {
     if (first == '-') {
       throw new IllegalArgumentException("negative recordKey is not supported: " + value);
     }
-    if (value.length() > 1 && first == '0') {
+    if (len > 1 && first == '0') {
       throw new IllegalArgumentException("leading zeros are not supported: " + value);
     }
 
     long result = 0L;
-    for (int i = 0; i < value.length(); i++) {
+    for (int i = 0; i < len; i++) {
       char ch = value.charAt(i);
       if (ch < '0' || ch > '9') {
         throw new IllegalArgumentException(

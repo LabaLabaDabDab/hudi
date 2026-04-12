@@ -23,6 +23,7 @@ import org.apache.hudi.avro.model.HoodieMetadataBloomFilter;
 import org.apache.hudi.avro.model.HoodieMetadataColumnStats;
 import org.apache.hudi.avro.model.HoodieMetadataFileInfo;
 import org.apache.hudi.avro.model.HoodieMetadataRecord;
+import org.apache.hudi.avro.model.HoodieRadixSplineIndexManifest;
 import org.apache.hudi.avro.model.HoodieRecordIndexInfo;
 import org.apache.hudi.avro.model.HoodieSecondaryIndexInfo;
 import org.apache.hudi.common.fs.FSUtils;
@@ -99,6 +100,9 @@ import static org.apache.hudi.metadata.HoodieTableMetadataUtil.getPartitionStats
  * METADATA_TYPE_BLOOM_FILTER (4):
  * -- This is an index for base file bloom filters. This is a map of FileID to its BloomFilter byte[].
  * <p>
+ * METADATA_TYPE_RADIX_SPLINE_MANIFEST (8):
+ * -- Pointer record for RADIX_SPLINE per-partition artifact (manifest fields only; binary on data table storage).
+ * <p>
  * During compaction on the table, the deletions are merged with additions and hence records are pruned.
  */
 public class HoodieMetadataPayload implements HoodieRecordPayload<HoodieMetadataPayload> {
@@ -113,6 +117,7 @@ public class HoodieMetadataPayload implements HoodieRecordPayload<HoodieMetadata
   private static final int COLUMN_STATS_METADATA_FIELD_OFFSET = BLOOM_FILTER_METADATA_FIELD_OFFSET + 1;
   private static final int RECORD_INDEX_METADATA_FIELD_OFFSET = COLUMN_STATS_METADATA_FIELD_OFFSET + 1;
   private static final int SECONDARY_INDEX_METADATA_FIELD_OFFSET = RECORD_INDEX_METADATA_FIELD_OFFSET + 1;
+  private static final int RADIX_SPLINE_INDEX_METADATA_FIELD_OFFSET = SECONDARY_INDEX_METADATA_FIELD_OFFSET + 1;
 
   /**
    * HoodieMetadata schema field ids
@@ -124,6 +129,7 @@ public class HoodieMetadataPayload implements HoodieRecordPayload<HoodieMetadata
   public static final String SCHEMA_FIELD_ID_BLOOM_FILTER = "BloomFilterMetadata";
   public static final String SCHEMA_FIELD_ID_RECORD_INDEX = "recordIndexMetadata";
   public static final String SCHEMA_FIELD_ID_SECONDARY_INDEX = "SecondaryIndexMetadata";
+  public static final String SCHEMA_FIELD_ID_RADIX_SPLINE = "radixSplineIndexMetadata";
 
   /**
    * HoodieMetadata bloom filter payload field ids
@@ -202,6 +208,7 @@ public class HoodieMetadataPayload implements HoodieRecordPayload<HoodieMetadata
   protected HoodieMetadataColumnStats columnStatMetadata = null;
   protected HoodieRecordIndexInfo recordIndexMetadata;
   protected HoodieSecondaryIndexInfo secondaryIndexMetadata;
+  protected HoodieRadixSplineIndexManifest radixSplineIndexMetadata;
   private boolean isDeletedRecord = false;
 
   public HoodieMetadataPayload(@Nullable GenericRecord record, Comparable<?> orderingVal) {
@@ -226,23 +233,39 @@ public class HoodieMetadataPayload implements HoodieRecordPayload<HoodieMetadata
   }
 
   protected HoodieMetadataPayload(String key, int type, Map<String, HoodieMetadataFileInfo> filesystemMetadata) {
-    this(key, type, filesystemMetadata, null, null, null, null, false);
+    this(key, type, filesystemMetadata, null, null, null, null, null, false);
   }
 
   protected HoodieMetadataPayload(String key, HoodieMetadataBloomFilter metadataBloomFilter) {
-    this(key, MetadataPartitionType.BLOOM_FILTERS.getRecordType(), null, metadataBloomFilter, null, null, null, metadataBloomFilter.getIsDeleted());
+    this(key, MetadataPartitionType.BLOOM_FILTERS.getRecordType(), null, metadataBloomFilter, null, null, null, null, metadataBloomFilter.getIsDeleted());
   }
 
   protected HoodieMetadataPayload(String key, HoodieMetadataColumnStats columnStats, int recordType) {
-    this(key, recordType, null, null, columnStats, null, null, columnStats.getIsDeleted());
+    this(key, recordType, null, null, columnStats, null, null, null, columnStats.getIsDeleted());
   }
 
   private HoodieMetadataPayload(String key, HoodieRecordIndexInfo recordIndexMetadata) {
-    this(key, MetadataPartitionType.RECORD_INDEX.getRecordType(), null, null, null, recordIndexMetadata, null, false);
+    this(key, MetadataPartitionType.RECORD_INDEX.getRecordType(), null, null, null, recordIndexMetadata, null, null, false);
   }
 
   protected HoodieMetadataPayload(String key, HoodieSecondaryIndexInfo secondaryIndexMetadata) {
-    this(key, MetadataPartitionType.SECONDARY_INDEX.getRecordType(), null, null, null, null, secondaryIndexMetadata, secondaryIndexMetadata.getIsDeleted());
+    this(key, MetadataPartitionType.SECONDARY_INDEX.getRecordType(), null, null, null, null, secondaryIndexMetadata, null, secondaryIndexMetadata.getIsDeleted());
+  }
+
+  /**
+   * Payload for {@link MetadataPartitionType#RADIX_SPLINE_INDEX} (manifest pointer to on-disk radix artifact).
+   */
+  public HoodieMetadataPayload(String key, HoodieRadixSplineIndexManifest radixSplineManifest) {
+    this(
+        key,
+        MetadataPartitionType.RADIX_SPLINE_INDEX.getRecordType(),
+        null,
+        null,
+        null,
+        null,
+        null,
+        radixSplineManifest,
+        radixSplineManifest.getIsDeleted());
   }
 
   protected HoodieMetadataPayload(String key, int type,
@@ -251,6 +274,7 @@ public class HoodieMetadataPayload implements HoodieRecordPayload<HoodieMetadata
                                   HoodieMetadataColumnStats columnStats,
                                   HoodieRecordIndexInfo recordIndexMetadata,
                                   HoodieSecondaryIndexInfo secondaryIndexMetadata,
+                                  HoodieRadixSplineIndexManifest radixSplineIndexMetadata,
                                   boolean isDeletedRecord) {
     this.key = key;
     this.type = type;
@@ -259,6 +283,7 @@ public class HoodieMetadataPayload implements HoodieRecordPayload<HoodieMetadata
     this.columnStatMetadata = columnStats;
     this.recordIndexMetadata = recordIndexMetadata;
     this.secondaryIndexMetadata = secondaryIndexMetadata;
+    this.radixSplineIndexMetadata = radixSplineIndexMetadata;
     this.isDeletedRecord = isDeletedRecord;
   }
 
@@ -413,7 +438,7 @@ public class HoodieMetadataPayload implements HoodieRecordPayload<HoodieMetadata
     if (schema == null || HOODIE_METADATA_SCHEMA == schema) {
       // If the schema is same or none is provided, we can return the record directly
       HoodieMetadataRecord record = new HoodieMetadataRecord(key, type, filesystemMetadata, bloomFilterMetadata,
-          columnStatMetadata, recordIndexMetadata, secondaryIndexMetadata);
+          columnStatMetadata, recordIndexMetadata, secondaryIndexMetadata, radixSplineIndexMetadata);
       return Option.of(record);
     } else {
       // Otherwise, the assumption is that the schema required contains the metadata fields so we construct a new GenericRecord with these fields
@@ -434,6 +459,9 @@ public class HoodieMetadataPayload implements HoodieRecordPayload<HoodieMetadata
       }
       if (secondaryIndexMetadata != null) {
         record.put(SECONDARY_INDEX_METADATA_FIELD_OFFSET, secondaryIndexMetadata);
+      }
+      if (radixSplineIndexMetadata != null) {
+        record.put(RADIX_SPLINE_INDEX_METADATA_FIELD_OFFSET, radixSplineIndexMetadata);
       }
       return Option.of(record);
     }
@@ -478,6 +506,22 @@ public class HoodieMetadataPayload implements HoodieRecordPayload<HoodieMetadata
     }
 
     return Option.of(columnStatMetadata);
+  }
+
+  public Option<HoodieRadixSplineIndexManifest> getRadixSplineIndexMetadata() {
+    if (radixSplineIndexMetadata == null) {
+      return Option.empty();
+    }
+    return Option.of(radixSplineIndexMetadata);
+  }
+
+  /**
+   * Upsert record for {@link MetadataPartitionType#RADIX_SPLINE_INDEX} (key = sanitized data partition id).
+   */
+  public static HoodieRecord<HoodieMetadataPayload> createRadixSplineManifestRecord(
+      String recordKey, HoodieRadixSplineIndexManifest manifest) {
+    HoodieKey key = new HoodieKey(recordKey, MetadataPartitionType.RADIX_SPLINE_INDEX.getPartitionPath());
+    return new HoodieAvroRecord<>(key, new HoodieMetadataPayload(key.getRecordKey(), manifest));
   }
 
   /**
@@ -750,12 +794,22 @@ public class HoodieMetadataPayload implements HoodieRecordPayload<HoodieMetadata
         && Objects.equals(this.filesystemMetadata, otherMetadataPayload.filesystemMetadata)
         && Objects.equals(this.bloomFilterMetadata, otherMetadataPayload.bloomFilterMetadata)
         && Objects.equals(this.columnStatMetadata, otherMetadataPayload.columnStatMetadata)
-        && Objects.equals(this.recordIndexMetadata, otherMetadataPayload.recordIndexMetadata);
+        && Objects.equals(this.recordIndexMetadata, otherMetadataPayload.recordIndexMetadata)
+        && Objects.equals(this.secondaryIndexMetadata, otherMetadataPayload.secondaryIndexMetadata)
+        && Objects.equals(this.radixSplineIndexMetadata, otherMetadataPayload.radixSplineIndexMetadata);
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(key, type, filesystemMetadata, bloomFilterMetadata, columnStatMetadata);
+    return Objects.hash(
+        key,
+        type,
+        filesystemMetadata,
+        bloomFilterMetadata,
+        columnStatMetadata,
+        recordIndexMetadata,
+        secondaryIndexMetadata,
+        radixSplineIndexMetadata);
   }
 
   @Override
@@ -784,6 +838,10 @@ public class HoodieMetadataPayload implements HoodieRecordPayload<HoodieMetadata
     } else if (type == MetadataPartitionType.RECORD_INDEX.getRecordType()) {
       sb.append("RecordIndex: {");
       sb.append("location=").append(getRecordGlobalLocation());
+      sb.append("}");
+    } else if (type == MetadataPartitionType.RADIX_SPLINE_INDEX.getRecordType()) {
+      sb.append("RadixSplineManifest: {");
+      sb.append(getRadixSplineIndexMetadata());
       sb.append("}");
     }
     sb.append('}');

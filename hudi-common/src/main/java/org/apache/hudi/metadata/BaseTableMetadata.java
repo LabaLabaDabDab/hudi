@@ -20,6 +20,7 @@ package org.apache.hudi.metadata;
 
 import org.apache.hudi.avro.model.HoodieMetadataBloomFilter;
 import org.apache.hudi.avro.model.HoodieMetadataColumnStats;
+import org.apache.hudi.avro.model.HoodieRadixSplineIndexManifest;
 import org.apache.hudi.common.bloom.BloomFilter;
 import org.apache.hudi.common.bloom.BloomFilterFactory;
 import org.apache.hudi.common.config.HoodieMetadataConfig;
@@ -103,6 +104,33 @@ public abstract class BaseTableMetadata extends AbstractHoodieTableMetadata {
       engineContext = new HoodieLocalEngineContext(dataMetaClient.getStorageConf());
     }
     return engineContext;
+  }
+
+  @Override
+  public Option<HoodieRadixSplineIndexManifest> getRadixSplineIndexManifest(String recordKey) {
+    if (!isMetadataTableInitialized) {
+      return Option.empty();
+    }
+    if (!dataMetaClient.getTableConfig().isMetadataPartitionAvailable(MetadataPartitionType.RADIX_SPLINE_INDEX)) {
+      return Option.empty();
+    }
+    HoodiePairData<String, HoodieMetadataPayload> recordsData =
+        readIndexRecordsWithKeys(
+            HoodieListData.eager(Collections.singletonList(new FilesIndexRawKey(recordKey))),
+            MetadataPartitionType.RADIX_SPLINE_INDEX.getPartitionPath());
+    try {
+      List<HoodieMetadataPayload> payloads = recordsData.values().collectAsList();
+      if (payloads.isEmpty()) {
+        return Option.empty();
+      }
+      Option<HoodieRadixSplineIndexManifest> opt = payloads.get(0).getRadixSplineIndexMetadata();
+      if (!opt.isPresent() || opt.get().getIsDeleted()) {
+        return Option.empty();
+      }
+      return opt;
+    } finally {
+      recordsData.unpersistWithDependencies();
+    }
   }
 
   /**
