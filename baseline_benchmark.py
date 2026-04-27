@@ -31,15 +31,19 @@ Env:
   HUDI_BASE_ROOT — default file:///tmp/hudi_bench/trips_cow if unset.
   HUDI_SPARK_JARS — comma-separated paths to Hudi fat jar(s); required unless you use spark-submit --jars.
   HUDI_TABLE_NAME, N_INITIAL, N_UPDATES, N_INSERTS, ROUNDS
+  HUDI_BENCH_PARTITION_BUCKETS — number of distinct partition paths (default 100): synthetic names p000…p{N-1}
+    under partition field dt (not calendar dates; avoids day-of-month limit when N > 31).
   HUDI_KEY_DISTRIBUTION — synthetic record key shape: linear, quadratic, affine7919, triangular, poly_sum
   BENCH_SPARK_SHUFFLE_PARTITIONS, BENCH_SPARK_DEFAULT_PARALLELISM — optional Spark tuning for large N_*
   BENCH_SPARK_DRIVER_MAX_RESULT_SIZE, BENCH_SPARK_EXECUTOR_MEMORY_OVERHEAD — optional (e.g. multi-million rows)
   BENCH_SPARK_EXECUTOR_MEMORY, BENCH_SPARK_DRIVER_MEMORY — passed through spark-submit (Docker large runs)
-  HUDI_INDEX_FILTER — comma-separated subset of profile ids (default: all)
+  HUDI_INDEX_FILTER — comma-separated profile ids, or ALL / empty for all COW-safe profiles
+    (excludes BUCKET_CONSISTENT_HASHING). Adds RECORD_INDEX alongside GLOBAL_RECORD_LEVEL_INDEX.
   HUDI_BUCKET_NUM_BUCKETS — for BUCKET profiles (default: 64)
   BUCKET + CONSISTENT_HASHING — not valid for COPY_ON_WRITE (benchmark default); use MOR or only SIMPLE bucket engine.
   HUDI_CLEANUP_AFTER_PROFILE — delete all round paths for profile after it finishes (default: true)
   HUDI_BENCH_LOG_LEVEL — Spark log level (default: WARN), e.g. INFO/DEBUG
+  HUDI_BENCH_JSON_SUMMARY — if set, path to a JSON file written at the end (all per-index summaries, n_*, etc.)
   HUDI_RADIX_PROFILE_TAG_LOCATION — if true, sets hoodie.index.radix_spline.profile_tag_location=true
     for the RADIX_SPLINE profile so each Spark task logs a timing breakdown (encode / reader / lookup / entry read).
     Use with HUDI_BENCH_LOG_LEVEL=INFO. Rebuild the Hudi bundle after changing Java code.
@@ -65,12 +69,12 @@ Docker Compose (this repo, docker-compose.yml):
     --conf spark.hadoop.fs.defaultFS=hdfs://localhost:9000
 
 Hudi JAR (required — plain Spark does not include Hudi):
-  Build bundle in this repo, then either:
+  Build bundle in this repo (Maven for -Dspark3.5 -Dscala-2.12 must run on JDK 17 — set JAVA_HOME), then:
 
     export HUDI_SPARK_JARS="$PWD/packaging/hudi-spark-bundle/target/hudi-spark3.5-bundle_2.12-"*.jar
     spark-submit baseline_benchmark.py
 
-  Spark 4.x + Scala 2.13 (e.g. Homebrew Spark) — соберите bundle с профилями проекта, затем:
+  Spark 4.x + Scala 2.13 (e.g. Homebrew Spark) — соберите bundle с профилями проекта (JDK 17 для Maven), затем:
 
     mvn -Dspark4.0 -Dscala-2.13 -pl packaging/hudi-spark-bundle -am -DskipTests package
     export HUDI_SPARK_JARS="$PWD/packaging/hudi-spark-bundle/target/hudi-spark4.0-bundle_2.13-"*.jar
@@ -93,6 +97,7 @@ Hudi JAR (required — plain Spark does not include Hudi):
 from __future__ import annotations
 
 import glob
+import json
 import os
 import sys
 import time
@@ -107,9 +112,9 @@ from pyspark.sql.functions import expr
 BASE_ROOT = os.environ.get("HUDI_BASE_ROOT", "file:///tmp/hudi_bench/trips_cow")
 TABLE_NAME = os.environ.get("HUDI_TABLE_NAME", "trips_cow")
 
-N_INITIAL = int(os.environ.get("N_INITIAL", "1000000"))
-N_UPDATES = int(os.environ.get("N_UPDATES", "100000"))
-N_INSERTS = int(os.environ.get("N_INSERTS", "100000"))
+N_INITIAL = int(os.environ.get("N_INITIAL", "5000000"))
+N_UPDATES = int(os.environ.get("N_UPDATES", "1250000"))
+N_INSERTS = int(os.environ.get("N_INSERTS", "500000"))
 ROUNDS = int(os.environ.get("ROUNDS", "3"))
 BUCKET_NUM = int(os.environ.get("HUDI_BUCKET_NUM_BUCKETS", "64"))
 CLEANUP_AFTER_PROFILE = os.environ.get("HUDI_CLEANUP_AFTER_PROFILE", "true").strip().lower() in (
@@ -144,21 +149,51 @@ RADIX_LOOKUP_WINDOW_ADAPTIVE_CALIBRATION_KEYS = os.environ.get(
 ).strip()
 KEY_DISTRIBUTION = os.environ.get("HUDI_KEY_DISTRIBUTION", "quadratic").strip().lower()
 
+_PARTITION_BUCKETS_RAW = os.environ.get("HUDI_BENCH_PARTITION_BUCKETS", "100").strip()
+try:
+    PARTITION_BUCKET_COUNT = int(_PARTITION_BUCKETS_RAW)
+except ValueError as e:
+    raise SystemExit(
+        f"HUDI_BENCH_PARTITION_BUCKETS must be an integer, got {_PARTITION_BUCKETS_RAW!r}"
+    ) from e
+if PARTITION_BUCKET_COUNT < 1:
+    raise SystemExit(f"HUDI_BENCH_PARTITION_BUCKETS must be >= 1, got {PARTITION_BUCKET_COUNT}")
+
 _METADATA_RADIX_ENABLE_RAW = os.environ.get("HUDI_METADATA_INDEX_RADIX_SPLINE_ENABLE", "").strip().lower()
 
-# Comma-separated profile ids; empty = all
+# Comma-separated profile ids. Empty or ALL = all Spark index profiles safe for COPY_ON_WRITE
+# (excludes BUCKET_CONSISTENT_HASHING — use MOR or run that profile explicitly).
 _INDEX_FILTER_RAW = os.environ.get("HUDI_INDEX_FILTER", "").strip()
+INDEX_FILTER_ALL_COW_SAFE = not _INDEX_FILTER_RAW or _INDEX_FILTER_RAW.upper() == "ALL"
 INDEX_FILTER: Optional[set[str]] = None
-if _INDEX_FILTER_RAW:
+if not INDEX_FILTER_ALL_COW_SAFE:
     INDEX_FILTER = {x.strip() for x in _INDEX_FILTER_RAW.split(",") if x.strip()}
 
+COW_UNSAFE_PROFILE_IDS = frozenset({"BUCKET_CONSISTENT_HASHING"})
+
 _SPARK: Optional[SparkSession] = None
+
+RADIX_ARTIFACT_MAGIC = 0x52534958  # RSIX, see SimpleTempRadixArtifactWriter.MAGIC
 
 
 def _spread_seed_sql(row_id_col: str) -> str:
     """Map monotonic row id -> [0, N_INITIAL) without 32-bit overflow in pmod."""
     return (
         f"pmod(cast({row_id_col} as bigint) * cast(15485863 as bigint), cast({N_INITIAL} as bigint))"
+    )
+
+
+def _partition_path_expr(seed_col: str) -> str:
+    """
+    Assign each row to one of PARTITION_BUCKET_COUNT synthetic partitions (field dt).
+
+    Paths look like p000, p001, … so we are not limited to 31 calendar days in March.
+    """
+    n = PARTITION_BUCKET_COUNT
+    width = max(len(str(n - 1)), 3)
+    return (
+        f"concat('p', lpad(cast(pmod(cast({seed_col} as bigint), cast({n} as bigint)) as string), "
+        f"{width}, '0'))"
     )
 
 
@@ -215,7 +250,9 @@ def _resolve_hudi_spark_jars(jars_env: str) -> str:
             if not matches:
                 print(
                     f"\nОшибка: HUDI_SPARK_JARS — шаблон не совпал ни с одним файлом:\n  {token!r}\n"
-                    "Соберите bundle: mvn -Dspark3.5 -Dscala-2.12 -pl packaging/hudi-spark-bundle -am -DskipTests package\n",
+                    "Соберите bundle под JDK 17 (JAVA_HOME). Пример macOS:\n"
+                    "  export JAVA_HOME=\"$(/usr/libexec/java_home -v 17)\"\n"
+                    "  mvn -Dspark3.5 -Dscala-2.12 -pl packaging/hudi-spark-bundle -am -DskipTests package\n",
                     file=sys.stderr,
                 )
                 raise SystemExit(2)
@@ -312,7 +349,8 @@ def require_hudi_or_exit() -> None:
     print(
         "\nОшибка: для Spark classloader не виден org.apache.hudi.DefaultSource.\n"
         "Если JAR уже в spark.jars, это редко — сообщите; чаще Hudi просто не подключён.\n\n"
-        "Соберите bundle:\n"
+        "Соберите bundle под JDK 17 (JAVA_HOME). Пример macOS:\n"
+        "  export JAVA_HOME=\"$(/usr/libexec/java_home -v 17)\"\n"
         "  mvn -Dspark3.5 -Dscala-2.12 -pl packaging/hudi-spark-bundle -am -DskipTests package\n\n"
         "Укажите основной JAR (не *-sources.jar):\n"
         "  export HUDI_SPARK_JARS=$PWD/packaging/hudi-spark-bundle/target/hudi-spark3.5-bundle_2.12-1.1.1.jar\n"
@@ -396,6 +434,14 @@ def spark_index_profiles() -> List[Dict[str, Any]]:
             },
         },
         {
+            "id": "RECORD_INDEX",
+            "label": "RECORD_INDEX (deprecated enum; same Spark engine as GLOBAL_RECORD_LEVEL_INDEX)",
+            "options": {
+                "hoodie.index.type": "RECORD_INDEX",
+                **md_global_on,
+            },
+        },
+        {
             "id": "GLOBAL_RECORD_LEVEL_INDEX",
             "label": "GLOBAL_RECORD_LEVEL_INDEX (metadata record index, global keys)",
             "options": {
@@ -463,6 +509,191 @@ def spark_index_profiles() -> List[Dict[str, Any]]:
     ]
 
 
+def _read_radix_artifact_header(dis) -> Dict[str, Any]:
+    """Parse SimpleTempRadixArtifactWriter header via java.io.DataInputStream."""
+    magic = dis.readInt()
+    if magic != RADIX_ARTIFACT_MAGIC:
+        return {"parse_error": f"bad_magic={magic:#x}"}
+    version = dis.readInt()
+    entry_count = dis.readLong()
+    min_key = dis.readLong()
+    max_key = dis.readLong()
+    max_error = dis.readInt()
+    radix_bits = dis.readInt()
+    spline_len = dis.readInt()
+    radix_len = dis.readInt()
+    return {
+        "artifact_format_version": version,
+        "entry_count": entry_count,
+        "min_key": min_key,
+        "max_key": max_key,
+        "max_error": max_error,
+        "radix_bits": radix_bits,
+        "spline_points": spline_len,
+        "radix_buckets": radix_len,
+    }
+
+
+def collect_radix_artifact_stats(spark: SparkSession, table_base_path: str) -> Dict[str, Any]:
+    """
+    Summarize RADIX_SPLINE on-disk model: read each partition manifest under
+    .hoodie/.radix_index_tmp/latest/*.properties and parse artifact binary headers.
+    """
+    jvm = spark._jvm
+    conf = spark._jsc.hadoopConfiguration()
+    base = table_base_path.rstrip("/")
+    latest = jvm.org.apache.hadoop.fs.Path(f"{base}/.hoodie/.radix_index_tmp/latest")
+    fs = latest.getFileSystem(conf)
+    if not fs.exists(latest):
+        return {"error": "latest_manifest_dir_missing", "path": str(latest)}
+
+    per_partition: List[Dict[str, Any]] = []
+    try:
+        statuses = fs.listStatus(latest)
+    except Exception as e:
+        return {"error": f"listStatus_failed:{e}"}
+
+    for st in statuses:
+        p = st.getPath()
+        name = p.getName()
+        if not name.endswith(".properties"):
+            continue
+        inp = None
+        try:
+            inp = fs.open(p)
+            props = jvm.java.util.Properties()
+            props.load(inp)
+        except Exception as e:
+            per_partition.append({"manifest": str(p), "error": f"manifest_load:{e}"})
+            continue
+        finally:
+            if inp is not None:
+                inp.close()
+
+        artifact_uri = props.getProperty("artifactPath")
+        if not artifact_uri:
+            per_partition.append({"manifest": str(p), "error": "no_artifactPath_in_manifest"})
+            continue
+
+        ain = None
+        try:
+            ap = jvm.org.apache.hadoop.fs.Path(str(artifact_uri))
+            afs = ap.getFileSystem(conf)
+            if not afs.exists(ap):
+                per_partition.append({"manifest": str(p), "artifact": artifact_uri, "error": "artifact_missing"})
+                continue
+            ain = afs.open(ap)
+            dis = jvm.java.io.DataInputStream(ain)
+            header = _read_radix_artifact_header(dis)
+            header["manifest"] = str(p)
+            header["artifact"] = artifact_uri
+            per_partition.append(header)
+        except Exception as e:
+            per_partition.append({"manifest": str(p), "artifact": artifact_uri, "error": f"artifact_read:{e}"})
+        finally:
+            if ain is not None:
+                ain.close()
+
+    spline_counts = [x["spline_points"] for x in per_partition if "spline_points" in x]
+    summary: Dict[str, Any] = {
+        "manifest_files_seen": len(per_partition),
+        "partitions_with_valid_spline_header": len(spline_counts),
+        "spline_points_per_partition": spline_counts,
+    }
+    if spline_counts:
+        summary["spline_points_min"] = min(spline_counts)
+        summary["spline_points_max"] = max(spline_counts)
+        spline_sum = sum(spline_counts)
+        summary["spline_points_sum"] = spline_sum
+        summary["total_spline_points_created"] = spline_sum
+        summary["spline_points_avg"] = round(sum(spline_counts) / len(spline_counts), 2)
+    return {"partitions": per_partition, "summary": summary}
+
+
+def merged_radix_profile_write_options(profiles: List[Dict[str, Any]]) -> Dict[str, str]:
+    radix = next((p for p in profiles if p["id"] == "RADIX_SPLINE"), None)
+    if not radix:
+        return {}
+    merged = dict(common_options)
+    merged.update(radix["options"])
+    return merged
+
+
+def effective_radix_spline_params(spark: SparkSession, profiles: List[Dict[str, Any]]) -> Dict[str, str]:
+    """
+    Effective hoodie.* radix-related keys for RADIX_SPLINE profile: explicit write options override
+    HoodieIndexConfig JVM defaults where applicable; metadata radix toggles come from merged common_options.
+    """
+    merged = merged_radix_profile_write_options(profiles)
+    if not merged:
+        return {}
+    try:
+        defaults = fetch_hudi_radix_defaults_from_jvm(spark)
+    except Exception:
+        defaults = {}
+    keys = sorted(set(k for k in list(merged.keys()) + list(defaults.keys()) if "radix" in k.lower()))
+    out: Dict[str, str] = {}
+    for k in keys:
+        if k in merged:
+            out[k] = merged[k]
+        elif k in defaults:
+            out[k] = defaults[k]
+    return out
+
+
+def fetch_hudi_radix_defaults_from_jvm(spark: SparkSession) -> Dict[str, str]:
+    """HoodieIndexConfig defaults as strings (for options not overridden in the benchmark)."""
+    jvm = spark._jvm
+    H = jvm.org.apache.hudi.config.HoodieIndexConfig
+    rows = [
+        H.RADIX_SPLINE_INDEX_MAX_ERROR,
+        H.RADIX_SPLINE_INDEX_RADIX_BITS,
+        H.RADIX_SPLINE_MAX_ENTRIES_PER_PARTITION,
+        H.RADIX_SPLINE_MERGE_MAX_ENTRIES_IN_MEMORY,
+        H.RADIX_SPLINE_PROFILE_TAG_LOCATION,
+        H.RADIX_SPLINE_LOOKUP_WINDOW_KEYS,
+        H.RADIX_SPLINE_LOOKUP_WINDOW_ADAPTIVE,
+        H.RADIX_SPLINE_LOOKUP_WINDOW_ADAPTIVE_MIN,
+        H.RADIX_SPLINE_LOOKUP_WINDOW_ADAPTIVE_MAX,
+        H.RADIX_SPLINE_LOOKUP_WINDOW_ADAPTIVE_CALIBRATION_KEYS,
+    ]
+    out: Dict[str, str] = {}
+    for cp in rows:
+        out[str(cp.key())] = str(cp.defaultValue())
+    return out
+
+
+def print_radix_configuration(spark: SparkSession, profiles: List[Dict[str, Any]]) -> None:
+    radix = next((p for p in profiles if p["id"] == "RADIX_SPLINE"), None)
+    if not radix:
+        return
+
+    print("\n=== RADIX_SPLINE configuration ===")
+    print("Environment overrides (unset = not passed to write options):")
+    print(f"  HUDI_RADIX_PROFILE_TAG_LOCATION={os.environ.get('HUDI_RADIX_PROFILE_TAG_LOCATION', '')!r}")
+    print(f"  HUDI_RADIX_MAX_ERROR={os.environ.get('HUDI_RADIX_MAX_ERROR', '')!r}")
+    print(f"  HUDI_RADIX_BITS={os.environ.get('HUDI_RADIX_BITS', '')!r}")
+    print(f"  HUDI_RADIX_LOOKUP_WINDOW_KEYS={os.environ.get('HUDI_RADIX_LOOKUP_WINDOW_KEYS', '')!r}")
+    print(f"  HUDI_RADIX_LOOKUP_WINDOW_ADAPTIVE={os.environ.get('HUDI_RADIX_LOOKUP_WINDOW_ADAPTIVE', '')!r}")
+    print(f"  HUDI_RADIX_LOOKUP_WINDOW_ADAPTIVE_MIN={os.environ.get('HUDI_RADIX_LOOKUP_WINDOW_ADAPTIVE_MIN', '')!r}")
+    print(f"  HUDI_RADIX_LOOKUP_WINDOW_ADAPTIVE_MAX={os.environ.get('HUDI_RADIX_LOOKUP_WINDOW_ADAPTIVE_MAX', '')!r}")
+    print(f"  HUDI_RADIX_LOOKUP_WINDOW_ADAPTIVE_CALIBRATION_KEYS={os.environ.get('HUDI_RADIX_LOOKUP_WINDOW_ADAPTIVE_CALIBRATION_KEYS', '')!r}")
+    print(f"  HUDI_METADATA_INDEX_RADIX_SPLINE_ENABLE={os.environ.get('HUDI_METADATA_INDEX_RADIX_SPLINE_ENABLE', '')!r}")
+
+    try:
+        eff = effective_radix_spline_params(spark, profiles)
+        print("\nEffective hoodie.* radix-related keys at benchmark start (write opts → else HoodieIndexConfig default):")
+        for k in sorted(eff.keys()):
+            print(f"  {k}={eff[k]}")
+    except Exception as e:
+        print(f"\n(could not compute effective radix params: {e})")
+
+    print(
+        "\nAfter each RADIX_SPLINE round: total spline points per partition manifest and the same "
+        "effective radix map are printed from on-disk artifacts (header spline_points ≈ len(splineKeys))."
+    )
+
+
 def delete_path_if_exists(path_str: str) -> None:
     """Resolve FileSystem from the path URI (hdfs vs file); default FS alone would mismatch."""
     spark = active_spark()
@@ -515,7 +746,7 @@ def build_initial_df():
         .withColumnRenamed("id", "seed")
         .withColumn("id", expr(_key_expr("seed")))
         .withColumn("ts", expr("id"))
-        .withColumn("dt", expr("concat('2026-03-', lpad(cast((seed % 10) + 1 as string), 2, '0'))"))
+        .withColumn("dt", expr(_partition_path_expr("seed")))
         .withColumn("payload", expr("concat('v_', id)"))
         .drop("seed")
     )
@@ -529,7 +760,7 @@ def build_scattered_updates_df():
         .withColumn("seed", expr(_spread_seed_sql("row_id")))
         .withColumn("id", expr(_key_expr("seed")))
         .withColumn("ts", expr("id + 100000000"))
-        .withColumn("dt", expr("concat('2026-03-', lpad(cast((seed % 10) + 1 as string), 2, '0'))"))
+        .withColumn("dt", expr(_partition_path_expr("seed")))
         .withColumn("payload", expr("concat('updated_', id)"))
         .drop("seed", "row_id")
     )
@@ -542,7 +773,7 @@ def build_new_inserts_df():
         .withColumnRenamed("id", "seed")
         .withColumn("id", expr(_key_expr("seed")))
         .withColumn("ts", expr("id + 200000000"))
-        .withColumn("dt", expr("concat('2026-03-', lpad(cast((seed % 10) + 1 as string), 2, '0'))"))
+        .withColumn("dt", expr(_partition_path_expr("seed")))
         .withColumn("payload", expr("concat('new_', id)"))
         .drop("seed")
     )
@@ -556,7 +787,7 @@ def build_mixed_df():
         .withColumn("seed", expr(_spread_seed_sql("row_id")))
         .withColumn("id", expr(_key_expr("seed")))
         .withColumn("ts", expr("id + 300000000"))
-        .withColumn("dt", expr("concat('2026-03-', lpad(cast((seed % 10) + 1 as string), 2, '0'))"))
+        .withColumn("dt", expr(_partition_path_expr("seed")))
         .withColumn("payload", expr("concat('mixed_existing_', id)"))
         .drop("seed", "row_id")
     )
@@ -566,7 +797,7 @@ def build_mixed_df():
         .withColumnRenamed("id", "seed")
         .withColumn("id", expr(_key_expr("seed")))
         .withColumn("ts", expr("id + 400000000"))
-        .withColumn("dt", expr("concat('2026-03-', lpad(cast((seed % 10) + 1 as string), 2, '0'))"))
+        .withColumn("dt", expr(_partition_path_expr("seed")))
         .withColumn("payload", expr("concat('mixed_new_', id)"))
         .drop("seed")
     )
@@ -588,7 +819,7 @@ def cleanup_profile_round_paths(profile_id: str) -> None:
             print(f"WARNING: cleanup failed for {profile_id} round {r}: {e}", file=sys.stderr)
 
 
-def run_one_round(profile: Dict[str, Any], round_no: int) -> Dict[str, Any]:
+def run_one_round(profile: Dict[str, Any], round_no: int, all_profiles: List[Dict[str, Any]]) -> Dict[str, Any]:
     spark = active_spark()
     spark.catalog.clearCache()
 
@@ -660,6 +891,69 @@ def run_one_round(profile: Dict[str, Any], round_no: int) -> Dict[str, Any]:
         metrics["mixed_new_payload_rows"] = mixed_new_check["result"]
         metrics["mixed_new_payload_check_seconds"] = mixed_new_check["seconds"]
 
+        if profile["id"] == "RADIX_SPLINE":
+            eff = effective_radix_spline_params(spark, all_profiles)
+            metrics["radix_effective_params"] = eff
+
+            radix_info = collect_radix_artifact_stats(spark, path)
+            metrics["radix_artifact_stats"] = radix_info
+
+            print("\n=== RADIX_SPLINE: spline points & effective radix parameters ===")
+            print("Effective hoodie.* radix-related options (explicit write → else HoodieIndexConfig default):")
+            if eff:
+                for k in sorted(eff.keys()):
+                    print(f"  {k}={eff[k]}")
+            else:
+                print("  (none — RADIX_SPLINE profile not in filter?)")
+
+            if radix_info.get("error"):
+                print(f"\nOn-disk spline collect_failed: {radix_info!r}")
+            else:
+                summ = radix_info.get("summary", {})
+                total_pts = summ.get("total_spline_points_created") or summ.get("spline_points_sum")
+                n_parts = summ.get("partitions_with_valid_spline_header")
+                print("\nSpline points (from artifact headers; one model per partition manifest):")
+                print(f"  total_spline_points_created={total_pts}")
+                print(f"  partitions_with_model={n_parts}")
+                if summ.get("spline_points_min") is not None:
+                    print(
+                        f"  per_partition: min={summ.get('spline_points_min')} "
+                        f"max={summ.get('spline_points_max')} avg={summ.get('spline_points_avg')}"
+                    )
+
+                metrics["radix_spline_points_total"] = total_pts
+                metrics["radix_model_partition_count"] = n_parts
+
+                parts = radix_info.get("partitions", [])
+                sample = next((x for x in parts if x.get("spline_points") is not None), None)
+                if sample:
+                    print(
+                        "\nSample partition artifact header (min_key/max_key/entry_count reflect stored index):"
+                    )
+                    print(
+                        f"  max_error={sample.get('max_error')} radix_bits={sample.get('radix_bits')} "
+                        f"radix_buckets={sample.get('radix_buckets')} "
+                        f"entry_count={sample.get('entry_count')} "
+                        f"min_key={sample.get('min_key')} max_key={sample.get('max_key')}"
+                    )
+
+                print("\nPer-partition details (first 25):")
+                for row in parts[:25]:
+                    if row.get("parse_error") or row.get("error"):
+                        print(f"  {row}")
+                    else:
+                        print(
+                            "  "
+                            f"spline_points={row.get('spline_points')} "
+                            f"entries={row.get('entry_count')} "
+                            f"max_error={row.get('max_error')} "
+                            f"radix_bits={row.get('radix_bits')} "
+                            f"radix_buckets={row.get('radix_buckets')} "
+                            f"artifact={row.get('artifact')}"
+                        )
+                if len(parts) > 25:
+                    print(f"  ... ({len(parts)} manifests total)")
+
     except Exception:
         metrics["ok"] = False
         metrics["error"] = traceback.format_exc()
@@ -729,7 +1023,9 @@ def main() -> int:
     require_hudi_or_exit()
 
     profiles = spark_index_profiles()
-    if INDEX_FILTER is not None:
+    if INDEX_FILTER_ALL_COW_SAFE:
+        profiles = [p for p in profiles if p["id"] not in COW_UNSAFE_PROFILE_IDS]
+    elif INDEX_FILTER is not None:
         profiles = [p for p in profiles if p["id"] in INDEX_FILTER]
         missing = INDEX_FILTER - {p["id"] for p in profiles}
         if missing:
@@ -742,16 +1038,21 @@ def main() -> int:
     print(
         f"Benchmark: {len(profiles)} index profile(s), {ROUNDS} round(s), "
         f"initial={N_INITIAL}, updates={N_UPDATES}, inserts={N_INSERTS}, "
+        f"partition_buckets={PARTITION_BUCKET_COUNT}, "
         f"key_distribution={KEY_DISTRIBUTION}, base={BASE_ROOT}"
     )
+    if INDEX_FILTER_ALL_COW_SAFE:
+        print("  (HUDI_INDEX_FILTER empty or ALL: COW-safe set; excluded: BUCKET_CONSISTENT_HASHING)")
     for p in profiles:
         print(f"  - {p['id']}: {p['label']}")
+
+    print_radix_configuration(active_spark(), profiles)
 
     all_by_profile: Dict[str, List[Dict[str, Any]]] = {p["id"]: [] for p in profiles}
 
     for p in profiles:
         for r in range(1, ROUNDS + 1):
-            m = run_one_round(p, r)
+            m = run_one_round(p, r, profiles)
             all_by_profile[p["id"]].append(m)
             status = "OK" if m["ok"] else "FAIL"
             print(f"[{status}] {p['id']} round {r}: {m}")
@@ -762,6 +1063,22 @@ def main() -> int:
     summaries: List[Dict[str, Any]] = []
     for p in profiles:
         runs = all_by_profile[p["id"]]
+        last_run = runs[-1]
+        write_seconds = [
+            last_run.get("bulk_insert_seconds"),
+            last_run.get("upsert_existing_seconds"),
+            last_run.get("insert_new_seconds"),
+            last_run.get("mixed_upsert_seconds"),
+        ]
+        validate_seconds = [
+            last_run.get("snapshot_count_seconds"),
+            last_run.get("updated_payload_check_seconds"),
+            last_run.get("new_payload_check_seconds"),
+            last_run.get("mixed_existing_payload_check_seconds"),
+            last_run.get("mixed_new_payload_check_seconds"),
+        ]
+        write_total_seconds = round(sum(x for x in write_seconds if isinstance(x, (int, float))), 2)
+        validate_total_seconds = round(sum(x for x in validate_seconds if isinstance(x, (int, float))), 2)
         summary: Dict[str, Any] = {
             "profile_id": p["id"],
             "profile_label": p["label"],
@@ -771,6 +1088,7 @@ def main() -> int:
             "n_initial": N_INITIAL,
             "n_updates": N_UPDATES,
             "n_inserts": N_INSERTS,
+            "partition_buckets": PARTITION_BUCKET_COUNT,
             "median_bulk_insert_rows_per_sec": _median_nums([x.get("bulk_insert_rows_per_sec") for x in runs]),
             "median_upsert_existing_rows_per_sec": _median_nums(
                 [x.get("upsert_existing_rows_per_sec") for x in runs]
@@ -781,12 +1099,32 @@ def main() -> int:
             ),
             "median_snapshot_count_seconds": _median_nums([x.get("snapshot_count_seconds") for x in runs]),
             "all_rounds_ok": all(x.get("ok") for x in runs),
-            "last_final_count": runs[-1].get("final_count"),
-            "last_updated_payload_rows": runs[-1].get("updated_payload_rows"),
-            "last_new_payload_rows": runs[-1].get("new_payload_rows"),
-            "last_mixed_existing_payload_rows": runs[-1].get("mixed_existing_payload_rows"),
-            "last_mixed_new_payload_rows": runs[-1].get("mixed_new_payload_rows"),
+            "last_bulk_insert_seconds": last_run.get("bulk_insert_seconds"),
+            "last_upsert_existing_seconds": last_run.get("upsert_existing_seconds"),
+            "last_insert_new_seconds": last_run.get("insert_new_seconds"),
+            "last_mixed_upsert_seconds": last_run.get("mixed_upsert_seconds"),
+            "last_snapshot_count_seconds": last_run.get("snapshot_count_seconds"),
+            "last_updated_payload_check_seconds": last_run.get("updated_payload_check_seconds"),
+            "last_new_payload_check_seconds": last_run.get("new_payload_check_seconds"),
+            "last_mixed_existing_payload_check_seconds": last_run.get("mixed_existing_payload_check_seconds"),
+            "last_mixed_new_payload_check_seconds": last_run.get("mixed_new_payload_check_seconds"),
+            "last_total_write_seconds": write_total_seconds,
+            "last_total_validation_seconds": validate_total_seconds,
+            "last_total_round_seconds": round(write_total_seconds + validate_total_seconds, 2),
+            "last_final_count": last_run.get("final_count"),
+            "last_updated_payload_rows": last_run.get("updated_payload_rows"),
+            "last_new_payload_rows": last_run.get("new_payload_rows"),
+            "last_mixed_existing_payload_rows": last_run.get("mixed_existing_payload_rows"),
+            "last_mixed_new_payload_rows": last_run.get("mixed_new_payload_rows"),
         }
+        if p["id"] == "RADIX_SPLINE":
+            rs = last_run.get("radix_artifact_stats") or {}
+            summ = rs.get("summary") or {}
+            summary["radix_total_spline_points"] = summ.get("total_spline_points_created") or summ.get(
+                "spline_points_sum"
+            )
+            summary["radix_model_partitions"] = summ.get("partitions_with_valid_spline_header")
+            summary["radix_effective_params"] = last_run.get("radix_effective_params")
         summaries.append(summary)
 
     print("\n=== SUMMARY (per index) ===")
@@ -794,6 +1132,28 @@ def main() -> int:
         print(s)
 
     print_comparison_table(summaries)
+
+    json_path = os.environ.get("HUDI_BENCH_JSON_SUMMARY", "").strip()
+    if json_path:
+        payload = {
+            "n_initial": N_INITIAL,
+            "n_updates": N_UPDATES,
+            "n_inserts": N_INSERTS,
+            "partition_buckets": PARTITION_BUCKET_COUNT,
+            "key_distribution": KEY_DISTRIBUTION,
+            "rounds": ROUNDS,
+            "base_root": BASE_ROOT,
+            "table_name": TABLE_NAME,
+            "summaries": summaries,
+            "runs_by_profile": all_by_profile,
+        }
+        json_abs = os.path.abspath(json_path)
+        dirpath = os.path.dirname(json_abs)
+        if dirpath:
+            os.makedirs(dirpath, exist_ok=True)
+        with open(json_abs, "w", encoding="utf-8") as jf:
+            json.dump(payload, jf, indent=2, default=str)
+        print(f"\nWrote JSON summary to {json_abs}")
 
     print(
         "\nNote: RECORD_INDEX enum is deprecated; use GLOBAL_RECORD_LEVEL_INDEX "

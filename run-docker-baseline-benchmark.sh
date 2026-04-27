@@ -17,6 +17,9 @@
 #   ./run-docker-baseline-benchmark.sh
 #   export HUDI_INDEX_FILTER=RADIX_SPLINE N_INITIAL=200000
 #   ./run-docker-baseline-benchmark.sh
+# Output artifacts are written to benchmark-sweep-results/<timestamp>/ by default:
+#   - run.log     (full console log)
+#   - summary.json (HUDI_BENCH_JSON_SUMMARY unless explicitly overridden)
 #
 set -euo pipefail
 
@@ -35,6 +38,20 @@ append_if_set() {
   fi
 }
 
+RUN_ID="$(date +%Y%m%d-%H%M%S)"
+OUT_DIR="${HUDI_BENCH_OUTPUT_DIR:-$ROOT/benchmark-sweep-results/$RUN_ID}"
+mkdir -p "$OUT_DIR"
+
+if [[ -z "${HUDI_BENCH_JSON_SUMMARY:-}" ]]; then
+  if [[ "$OUT_DIR" == "$ROOT/"* ]]; then
+    rel="${OUT_DIR#$ROOT/}"
+    export HUDI_BENCH_JSON_SUMMARY="/workspace/hudi/$rel/summary.json"
+  else
+    export HUDI_BENCH_JSON_SUMMARY="/workspace/hudi/benchmark-sweep-results/$RUN_ID/summary.json"
+  fi
+fi
+
+# Rebuild env list after defaults potentially set above.
 DOCKER_ENV=()
 for name in \
   HUDI_BASE_ROOT \
@@ -56,15 +73,18 @@ for name in \
   HUDI_RADIX_LOOKUP_WINDOW_ADAPTIVE_MAX \
   HUDI_RADIX_LOOKUP_WINDOW_ADAPTIVE_CALIBRATION_KEYS \
   HUDI_KEY_DISTRIBUTION \
+  HUDI_BENCH_PARTITION_BUCKETS \
   HUDI_BUCKET_NUM_BUCKETS \
   HUDI_METADATA_INDEX_RADIX_SPLINE_ENABLE \
+  HUDI_BENCH_JSON_SUMMARY \
   BENCH_SPARK_SHUFFLE_PARTITIONS \
   BENCH_SPARK_DEFAULT_PARALLELISM \
   BENCH_SPARK_DRIVER_MAX_RESULT_SIZE \
   BENCH_SPARK_EXECUTOR_MEMORY_OVERHEAD \
   BENCH_SPARK_EXECUTOR_MEMORY \
   BENCH_SPARK_DRIVER_MEMORY \
-  SKIP_BUNDLE_BUILD; do
+  SKIP_BUNDLE_BUILD \
+  BENCH_SPARK_MASTER; do
   append_if_set "$name"
 done
 
@@ -72,6 +92,12 @@ echo "Starting HDFS + Spark + hudi-dev..."
 docker compose up -d
 
 echo "Running benchmark inside hudi-dev..."
-exec docker compose exec -T "${DOCKER_ENV[@]}" hudi-dev \
+echo "Run log: $OUT_DIR/run.log"
+echo "Summary JSON (container path): ${HUDI_BENCH_JSON_SUMMARY}"
+set +e
+docker compose exec -T "${DOCKER_ENV[@]}" hudi-dev \
   /workspace/hudi/scripts/run-baseline-benchmark-in-container.sh \
-  "$@"
+  "$@" 2>&1 | tee "$OUT_DIR/run.log"
+rc=${PIPESTATUS[0]}
+set -e
+exit "$rc"

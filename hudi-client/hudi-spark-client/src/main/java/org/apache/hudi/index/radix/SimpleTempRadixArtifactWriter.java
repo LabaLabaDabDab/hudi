@@ -73,10 +73,6 @@ final class SimpleTempRadixArtifactWriter implements TempRadixArtifactWriter {
         Paths.get(System.getProperty("java.io.tmpdir")));
   }
 
-  /**
-   * @param localTempDir directory for radix-entries/keys/offsets temp files (e.g. under table
-   *     {@code .hoodie/.radix_index_tmp/.writer_scratch} for local file tables)
-   */
   SimpleTempRadixArtifactWriter(
       RadixArtifactPublisher artifactPublisher,
       int maxEntriesPerPartition,
@@ -98,7 +94,7 @@ final class SimpleTempRadixArtifactWriter implements TempRadixArtifactWriter {
 
     long startedNanos = System.nanoTime();
     LOG.info(
-        "RADIX writer start: partition={}, instant={}, maxError={}, radixBits={}, fileCount={}, fingerprint={}",
+        "RADIX writer start: partition={}, instant={}, maxError={}, configuredRadixBits={}, fileCount={}, fingerprint={}",
         partitionPath,
         baseInstant,
         maxError,
@@ -204,17 +200,21 @@ final class SimpleTempRadixArtifactWriter implements TempRadixArtifactWriter {
 
       int n = (int) entryCount;
 
+      int chosenRadixBits = chooseRadixBits(radixBits, entryCount);
       long modelBuildStartedNanos = System.nanoTime();
       RadixSplineModel model;
       try (LongFileSortedKeyAccessor keyAccessor = new LongFileSortedKeyAccessor(keysFile, n)) {
-        model = RadixSplineModel.build(keyAccessor, maxError, radixBits);
+        model = RadixSplineModel.build(keyAccessor, maxError, chosenRadixBits);
       }
       long modelBuildElapsedMs = elapsedMs(modelBuildStartedNanos);
 
       LOG.info(
-          "RADIX spline model built: partition={}, instant={}, splineLen={}, radixLen={}, buildModelMs={}",
+          "RADIX spline model built: partition={}, instant={}, configuredRadixBits={}, chosenRadixBits={}, "
+              + "splineLen={}, radixLen={}, buildModelMs={}",
           partitionPath,
           baseInstant,
+          radixBits,
+          chosenRadixBits,
           model.splineKeys().length,
           model.radixMinIndex().length,
           modelBuildElapsedMs);
@@ -291,7 +291,7 @@ final class SimpleTempRadixArtifactWriter implements TempRadixArtifactWriter {
             minKey,
             maxKey,
             maxError,
-            radixBits,
+            chosenRadixBits,
             model.splineKeys().length,
             model.radixMinIndex().length,
             splineKeysOffset,
@@ -306,11 +306,22 @@ final class SimpleTempRadixArtifactWriter implements TempRadixArtifactWriter {
 
       long assembleElapsedMs = elapsedMs(assembleStartedNanos);
       long localArtifactBytes = Files.size(localArtifact);
+      int splinePoints = model.splineKeys().length;
+      int radixBuckets = model.radixMinIndex().length;
+      long splineKeysBytes = splinePositionsOffset - splineKeysOffset;
+      long splinePositionsBytes = radixMinOffset - splinePositionsOffset;
+      long radixMinBytes = radixMaxOffset - radixMinOffset;
+      long radixMaxBytes = keysOffset - radixMaxOffset;
+      long keysBytes = entryOffsetsOffset - keysOffset;
+      long entryOffsetsBytes = entriesOffset - entryOffsetsOffset;
+      long entriesBytes = localArtifactBytes - entriesOffset;
 
       LOG.info(
           "RADIX writer assemble phases: partition={}, instant={}, assembleSplineMs={}, "
               + "assembleKeysOffsetsMs={}, assembleEntriesMs={}, assembleHeaderMs={}, assembleTotalMs={}, "
-              + "localArtifactBytes={}",
+              + "localArtifactBytes={}, splinePoints={}, radixBuckets={}, "
+              + "splineKeysBytes={}, splinePositionsBytes={}, radixMinBytes={}, radixMaxBytes={}, "
+              + "keysBytes={}, entryOffsetsBytes={}, dictionaryBytes={}, entriesBytes={}",
           partitionPath,
           baseInstant,
           assembleSplineMs,
@@ -318,7 +329,17 @@ final class SimpleTempRadixArtifactWriter implements TempRadixArtifactWriter {
           assembleEntriesMs,
           assembleHeaderMs,
           assembleElapsedMs,
-          localArtifactBytes);
+          localArtifactBytes,
+          splinePoints,
+          radixBuckets,
+          splineKeysBytes,
+          splinePositionsBytes,
+          radixMinBytes,
+          radixMaxBytes,
+          keysBytes,
+          entryOffsetsBytes,
+          dictionaryBytes,
+          entriesBytes);
 
       long publishStartedNanos = System.nanoTime();
       String artifactPath = artifactPublisher.publish(partitionPath, baseInstant, localArtifact);
@@ -328,7 +349,9 @@ final class SimpleTempRadixArtifactWriter implements TempRadixArtifactWriter {
       LOG.info(
           "RADIX writer phase totals: partition={}, instant={}, artifactPath={}, materializeMs={}, modelBuildMs={}, "
               + "assembleSplineMs={}, assembleKeysOffsetsMs={}, assembleEntriesMs={}, assembleHeaderMs={}, "
-              + "assembleTotalMs={}, publishMs={}, writerTotalMs={}",
+              + "assembleTotalMs={}, publishMs={}, writerTotalMs={}, configuredRadixBits={}, chosenRadixBits={}, "
+              + "localArtifactBytes={}, splinePoints={}, "
+              + "radixBuckets={}, keysBytes={}, entryOffsetsBytes={}, dictionaryBytes={}, entriesBytes={}",
           partitionPath,
           baseInstant,
           artifactPath,
@@ -340,7 +363,16 @@ final class SimpleTempRadixArtifactWriter implements TempRadixArtifactWriter {
           assembleHeaderMs,
           assembleElapsedMs,
           publishElapsedMs,
-          totalElapsedMs);
+          totalElapsedMs,
+          radixBits,
+          chosenRadixBits,
+          localArtifactBytes,
+          splinePoints,
+          radixBuckets,
+          keysBytes,
+          entryOffsetsBytes,
+          dictionaryBytes,
+          entriesBytes);
 
       return new PartitionLookupDescriptor(
           partitionPath,
@@ -570,6 +602,14 @@ final class SimpleTempRadixArtifactWriter implements TempRadixArtifactWriter {
 
   private static long elapsedMs(long startedNanos) {
     return (System.nanoTime() - startedNanos) / 1_000_000L;
+  }
+
+  private static int chooseRadixBits(int configuredRadixBits, long entryCount) {
+    if (configuredRadixBits <= 0 || entryCount <= 1) {
+      return 0;
+    }
+    int maxUsefulBits = 64 - Long.numberOfLeadingZeros(entryCount - 1);
+    return Math.min(configuredRadixBits, maxUsefulBits);
   }
 
   private static String shortFingerprint(String fingerprint) {

@@ -31,18 +31,14 @@ import java.util.SplittableRandom;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-/**
- * Compares {@link SeekableWindowedKeyAccessor} fixed window vs adaptive window on identical
- * lookup workload (in-memory seekable bytes). Intended for local A/B when Spark+bundle
- * versions do not line up; prints timings to stdout for surefire reports.
- */
+/** Local microbench: fixed vs adaptive {@link SeekableWindowedKeyAccessor}; prints to stdout. */
 public class TestRadixLookupWindowMicroBenchmark {
 
   @Test
   public void printFixedVsAdaptiveLookupTimings() throws IOException {
-    final int n = 120_000;
-    final int warmup = 25_000;
-    final int timed = 120_000;
+    final int n = Integer.getInteger("radix.microbench.n", 120_000);
+    final int warmup = Integer.getInteger("radix.microbench.warmup", 25_000);
+    final int timed = Integer.getInteger("radix.microbench.timed", 120_000);
     final int maxError = 16;
     final int radixBits = 8;
     final int calibrationKeyAts = 6_000;

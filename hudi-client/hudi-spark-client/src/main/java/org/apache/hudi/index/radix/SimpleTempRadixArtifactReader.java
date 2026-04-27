@@ -195,7 +195,26 @@ final class SimpleTempRadixArtifactReader implements TempRadixArtifactReader {
     return entryAtWithTiming(position, null);
   }
 
+  RadixLocationEntry entryAtIfEncodedKeyMatches(int position, long expectedEncodedKey) throws IOException {
+    return entryAtIfEncodedKeyMatchesWithTiming(position, expectedEncodedKey, null);
+  }
+
+  RadixLocationEntry entryAtIfEncodedKeyMatchesWithTiming(
+      int position,
+      long expectedEncodedKey,
+      EntryAtTiming timing) throws IOException {
+    return readEntry(position, true, expectedEncodedKey, timing);
+  }
+
   RadixLocationEntry entryAtWithTiming(int position, EntryAtTiming timing) throws IOException {
+    return readEntry(position, false, 0L, timing);
+  }
+
+  private RadixLocationEntry readEntry(
+      int position,
+      boolean checkEncodedKey,
+      long expectedEncodedKey,
+      EntryAtTiming timing) throws IOException {
     if (position < 0 || position >= entryCount) {
       throw new IndexOutOfBoundsException(
           "position=" + position + ", entryCount=" + entryCount);
@@ -209,6 +228,12 @@ final class SimpleTempRadixArtifactReader implements TempRadixArtifactReader {
       long t1 = System.nanoTime();
       input.seek(entriesOffset + relativeEntryOffset);
       long encodedKey = input.readLong();
+      if (checkEncodedKey && encodedKey != expectedEncodedKey) {
+        if (timing != null) {
+          timing.record(offsetLookupNs, 0L);
+        }
+        return null;
+      }
       String recordKey = readRecordKey();
       String instantTime;
       String fileId;

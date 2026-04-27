@@ -32,10 +32,7 @@ import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 
-/**
- * Correctness for {@link RadixArtifactOpenScratch} and a stdout microbench vs per-call
- * {@code new byte[] + ByteBuffer.wrap} (same workload as artifact open array reads).
- */
+/** Correctness + stdout microbench for {@link RadixArtifactOpenScratch}. */
 public class TestRadixArtifactOpenScratchMicroBenchmark {
 
   @Test
@@ -56,17 +53,12 @@ public class TestRadixArtifactOpenScratchMicroBenchmark {
     assertArrayEquals(intsBase, intsScratch);
   }
 
-  /**
-   * Prints timings to surefire stdout: isolates decode + I/O pattern used at artifact open
-   * (repeated reads of the same-sized regions). Expect modest win; dominated by readFully
-   * for large arrays.
-   */
   @Test
   public void printAllocVsScratchTimings() throws IOException {
-    final int longCount = 50_000;
-    final int intCount = 50_000;
-    final int warmup = 30;
-    final int timed = 80;
+    final int longCount = Integer.getInteger("radix.open.microbench.longCount", 50_000);
+    final int intCount = Integer.getInteger("radix.open.microbench.intCount", 50_000);
+    final int warmup = Integer.getInteger("radix.open.microbench.warmup", 30);
+    final int timed = Integer.getInteger("radix.open.microbench.timed", 80);
 
     byte[] payload = buildPayload(longCount, intCount);
     Object lock = new Object();

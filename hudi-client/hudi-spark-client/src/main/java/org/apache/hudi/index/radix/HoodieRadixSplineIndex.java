@@ -69,6 +69,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -95,10 +96,6 @@ public class HoodieRadixSplineIndex extends HoodieIndex<Object, Object> {
 
   private static final Logger LOG = LoggerFactory.getLogger(HoodieRadixSplineIndex.class);
 
-  /**
-   * Initial capacity for per-task tagLocation output list (Spark partition size varies; this reduces
-   * ArrayList growth rounds for typical micro-batches without large overhead for tiny partitions).
-   */
   private static final int TAG_LOCATION_OUTPUT_INITIAL_CAPACITY = 1024;
 
   private final int maxError;
@@ -234,8 +231,6 @@ public class HoodieRadixSplineIndex extends HoodieIndex<Object, Object> {
       long keyMismatch = 0L;
       long taggedOk = 0L;
 
-      // One reader per Hudi partition per Spark task — avoids repeated RadixArtifactReaderCache lookups
-      // and synchronized paths on every row (global cache still opens underlying streams once).
       Map<String, TempRadixArtifactReader> readerByPartitionPath = new HashMap<>(readerMapCapacity);
       final RadixSplineLookup.LookupTiming lookupTiming =
           profileTagLocation ? new RadixSplineLookup.LookupTiming() : null;
@@ -317,7 +312,8 @@ public class HoodieRadixSplineIndex extends HoodieIndex<Object, Object> {
               if (reader instanceof SimpleTempRadixArtifactReader) {
                 SimpleTempRadixArtifactReader.EntryAtTiming timing =
                     new SimpleTempRadixArtifactReader.EntryAtTiming();
-                candidate = ((SimpleTempRadixArtifactReader) reader).entryAtWithTiming(position, timing);
+                candidate = ((SimpleTempRadixArtifactReader) reader)
+                    .entryAtIfEncodedKeyMatchesWithTiming(position, encodedKey, timing);
                 entryOffsetLookupNs += timing.getOffsetLookupNs();
                 entryPayloadReadNs += timing.getPayloadReadNs();
                 entryPayloadReadCalls += timing.getPayloadReadCalls();
@@ -326,6 +322,9 @@ public class HoodieRadixSplineIndex extends HoodieIndex<Object, Object> {
               }
               entryReadNs += System.nanoTime() - t0;
               entryReadCalls++;
+            } else if (reader instanceof SimpleTempRadixArtifactReader) {
+              candidate = ((SimpleTempRadixArtifactReader) reader)
+                  .entryAtIfEncodedKeyMatches(position, encodedKey);
             } else {
               candidate = reader.entryAt(position);
             }
@@ -337,7 +336,7 @@ public class HoodieRadixSplineIndex extends HoodieIndex<Object, Object> {
                 ioe);
           }
 
-          if (!recordKey.equals(candidate.getRecordKey())) {
+          if (candidate == null || !recordKey.equals(candidate.getRecordKey())) {
             keyMismatch++;
             output.add(record);
             continue;
@@ -358,6 +357,42 @@ public class HoodieRadixSplineIndex extends HoodieIndex<Object, Object> {
                   + "lookupKeyAtCalls={}, lookupAvgKeyAtPerLookup={}, "
                   + "lookupAvgBoundWidth={}, lookupBucketHitRatio={}, lookupBucketMissRatio={}, lookupEmptyBucketRatio={}, "
                   + "entryReadMs={} (calls={}), entryOffsetLookupMs={}, entryPayloadReadMs={} (calls={})",
+              sparkPartitionId,
+              taskAttemptId,
+              recordsTotal,
+              recordsNoRuntime,
+              recordsIndexed,
+              taggedOk,
+              notFound,
+              badPosition,
+              keyMismatch,
+              encodeNs / 1_000_000L,
+              readerGetNs / 1_000_000L,
+              readerGetCalls,
+              lookupNs / 1_000_000L,
+              lookupCalls,
+              lookupKeyAtCalls,
+              lookupCalls > 0 ? ((double) lookupKeyAtCalls) / lookupCalls : 0.0d,
+              lookupCalls > 0 ? ((double) lookupBoundWidthTotal) / lookupCalls : 0.0d,
+              lookupCalls > 0 ? ((double) lookupBucketHits) / lookupCalls : 0.0d,
+              lookupCalls > 0 ? ((double) lookupBucketMisses) / lookupCalls : 0.0d,
+              lookupCalls > 0 ? ((double) lookupEmptyBuckets) / lookupCalls : 0.0d,
+              entryReadNs / 1_000_000L,
+              entryReadCalls,
+              entryOffsetLookupNs / 1_000_000L,
+              entryPayloadReadNs / 1_000_000L,
+              entryPayloadReadCalls);
+          // Machine-friendly single-line JSON for downstream parsing and dashboards.
+          LOG.info(
+              "RADIX tagLocation task profile json={\"sparkPartitionId\":{},\"taskAttemptId\":{},"
+                  + "\"recordsTotal\":{},\"noRuntime\":{},\"indexed\":{},\"taggedOk\":{},"
+                  + "\"notFound\":{},\"badPosition\":{},\"keyMismatch\":{},"
+                  + "\"encodeMs\":{},\"readerGetMs\":{},\"readerGetCalls\":{},"
+                  + "\"lookupMs\":{},\"lookupCalls\":{},\"lookupKeyAtCalls\":{},"
+                  + "\"lookupAvgKeyAtPerLookup\":{},\"lookupAvgBoundWidth\":{},"
+                  + "\"lookupBucketHitRatio\":{},\"lookupBucketMissRatio\":{},\"lookupEmptyBucketRatio\":{},"
+                  + "\"entryReadMs\":{},\"entryReadCalls\":{},\"entryOffsetLookupMs\":{},"
+                  + "\"entryPayloadReadMs\":{},\"entryPayloadReadCalls\":{}}",
               sparkPartitionId,
               taskAttemptId,
               recordsTotal,
@@ -407,10 +442,18 @@ public class HoodieRadixSplineIndex extends HoodieIndex<Object, Object> {
 
     long started = System.nanoTime();
 
-    Set<String> touchedPartitions = new LinkedHashSet<>(records
-        .map(HoodieRecord::getPartitionPath)
-        .distinct()
-        .collectAsList());
+    List<Set<String>> partitionSets = records.mapPartitions(iterator -> {
+      Set<String> localPartitions = new HashSet<>();
+      while (iterator.hasNext()) {
+        localPartitions.add(iterator.next().getPartitionPath());
+      }
+      return Collections.<Set<String>>singletonList(localPartitions).iterator();
+    }, true).collectAsList();
+
+    Set<String> touchedPartitions = new LinkedHashSet<>();
+    for (Set<String> partitionSet : partitionSets) {
+      touchedPartitions.addAll(partitionSet);
+    }
 
     if (touchedPartitions.isEmpty()) {
       LOG.info("RADIX loadPartitionLookups: no touched partitions");

@@ -49,6 +49,7 @@ fi
 
 if [[ "${SKIP_BUNDLE_BUILD:-}" != "1" ]]; then
   echo "Building hudi-spark3.5-bundle (Scala 2.12) — first run may take several minutes..."
+  # Hudi Spark 3.5 / Scala 2.12 bundle: build with JDK 17 (image hudi-dev uses Java 17).
   mvn -Dspark3.5 -Dscala-2.12 -pl packaging/hudi-spark-bundle -am -DskipTests package -Dmaven.javadoc.skip=true
 fi
 
@@ -83,8 +84,11 @@ if [[ -n "${BENCH_SPARK_DRIVER_MEMORY:-}" ]]; then
   SPARK_BENCH_CONF_ARGS+=(--conf "spark.driver.memory=${BENCH_SPARK_DRIVER_MEMORY}")
 fi
 
+# BENCH_SPARK_MASTER — optional override e.g. local[2] when standalone workers do not offer resources.
+SPARK_MASTER_URL="${BENCH_SPARK_MASTER:-spark://${SPARK_MASTER_HOST:-spark-master}:${SPARK_MASTER_PORT:-7077}}"
+
 exec /opt/spark/bin/spark-submit \
-  --master "spark://${SPARK_MASTER_HOST:-spark-master}:${SPARK_MASTER_PORT:-7077}" \
+  --master "$SPARK_MASTER_URL" \
   --conf "spark.hadoop.fs.defaultFS=hdfs://${HDFS_NAMENODE_HOST:-namenode}:${HDFS_NAMENODE_RPC_PORT:-9000}" \
   "${SPARK_BENCH_CONF_ARGS[@]}" \
   --jars "$bundle" \

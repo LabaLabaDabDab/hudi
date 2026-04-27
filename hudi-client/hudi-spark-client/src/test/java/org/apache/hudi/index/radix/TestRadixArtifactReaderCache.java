@@ -37,6 +37,7 @@ import java.nio.file.Path;
 import java.util.Properties;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -112,6 +113,23 @@ public class TestRadixArtifactReaderCache extends HoodieSparkClientTestHarness {
     assertEquals(1, RadixArtifactReaderCache.cacheSizeForTesting());
     RadixArtifactReaderCache.getOrOpen(d2, storageConf);
     assertEquals(1, RadixArtifactReaderCache.cacheSizeForTesting());
+  }
+
+  @Test
+  public void testEntryAtIfEncodedKeyMismatchReturnsNullMatchReturnsFullEntry() throws Exception {
+    Path staging = Path.of(basePath, ".hoodie", ".radix_index_tmp");
+    Files.createDirectories(staging);
+    PartitionLookupDescriptor desc = writeOneEntryArtifactForTest(staging);
+
+    try (SimpleTempRadixArtifactReader reader =
+        SimpleTempRadixArtifactReader.open(desc.getArtifactPath(), storageConf)) {
+
+      assertNull(reader.entryAtIfEncodedKeyMatches(0, 11L));
+
+      RadixLocationEntry expected =
+          new RadixLocationEntry(10L, "k1", new HoodieRecordLocation("001", "f1"));
+      assertEquals(expected, reader.entryAtIfEncodedKeyMatches(0, 10L));
+    }
   }
 
   @Test

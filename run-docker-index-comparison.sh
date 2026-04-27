@@ -10,8 +10,9 @@
 #
 #   http://www.apache.org/licenses/LICENSE-2.0
 #
-# Run baseline_benchmark.py across multiple hoodie.index.type values (Spark 3.5 in Docker).
-# BUCKET_CONSISTENT_HASHING is omitted: not valid for COPY_ON_WRITE (benchmark default).
+# Run baseline_benchmark.py across hoodie.index.type values (Spark 3.5 in Docker).
+# Default HUDI_INDEX_FILTER=ALL runs every COW-safe profile (see baseline_benchmark.py);
+# BUCKET_CONSISTENT_HASHING is excluded unless you set an explicit filter that includes it.
 #
 # Override sizes from the host, e.g.:
 #   N_INITIAL=500000 N_UPDATES=50000 ./run-docker-index-comparison.sh
@@ -21,7 +22,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
-export HUDI_INDEX_FILTER="${HUDI_INDEX_FILTER:-SIMPLE,INMEMORY,BLOOM,GLOBAL_BLOOM,GLOBAL_SIMPLE,BUCKET_SIMPLE,GLOBAL_RECORD_LEVEL_INDEX,RECORD_LEVEL_INDEX,RADIX_SPLINE}"
+# ALL = every profile in baseline_benchmark.py that is safe for COPY_ON_WRITE (see COW_UNSAFE_PROFILE_IDS).
+export HUDI_INDEX_FILTER="${HUDI_INDEX_FILTER:-ALL}"
 export N_INITIAL="${N_INITIAL:-80000}"
 export N_UPDATES="${N_UPDATES:-15000}"
 export N_INSERTS="${N_INSERTS:-15000}"

@@ -1,3 +1,6 @@
+# Local benchmark artifacts #
+benchmark-sweep-results/
+
 # Directories #
 /build/
 target/

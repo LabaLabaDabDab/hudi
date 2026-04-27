@@ -2829,5 +2829,40 @@
         </plugins>
       </build>
     </profile>
+    <profile>
+      <id>hudi-team-enforce-java17</id>
+      <activation>
+        <file>
+          <exists>.mvn/enforce-java17</exists>
+        </file>
+      </activation>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-enforcer-plugin</artifactId>
+            <version>${maven-enforcer-plugin.version}</version>
+            <executions>
+              <execution>
+                <id>enforce-runtime-jdk-17</id>
+                <goals>
+                  <goal>enforce</goal>
+                </goals>
+                <phase>validate</phase>
+                <configuration>
+                  <rules>
+                    <requireJavaVersion>
+                      <version>[17,18)</version>
+                      <message>JDK 17 is required to run Maven for this workspace (see .mvn/enforce-java17). Set JAVA_HOME to a 17.x JDK; compiled bytecode target is still Java ${java.version}.</message>
+                    </requireJavaVersion>
+                  </rules>
+                  <fail>true</fail>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
   </profiles>
 </project>
